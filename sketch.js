@@ -71,6 +71,24 @@ const TAP_MAX_MOVE_PX = 14;
 const PRESS_MIN_MS = 420;
 const GESTURE_RESET_MS = 15000; // watchdog for a touch that never releases
 
+// Drag pushes and pulls
+const DRAG_PUSH_GAIN = 0.35;
+const DRAG_STRETCH_GAIN = 0.5; // local bulge toward the finger while dragging
+const DRAG_MAX_OFFSET = 90; // the body cannot be dragged off the screen
+const RETURN_SPRING = 0.012;
+const RETURN_DAMPING = 0.9;
+
+// Every touch ripples
+const RIPPLE_MAX_RADIUS = 0.95; // fraction of the body radius
+const RIPPLE_LIFE_MS = 1100;
+const RIPPLE_ALPHA = 0.3;
+
+// Tilt and shake nudge the same genome
+const TILT_NUDGE_GAIN = 0.5; // a full touch is 1
+const TILT_NUDGE_DEGREES = 6; // how far from rest it must move before it counts
+const SHAKE_NUDGE_GAIN = 0.7;
+const SHAKE_COOLDOWN_MS = 2500;
+
 // Tap brightens, press swells
 const BRIGHTEN_AMOUNT = 16;
 const BRIGHTEN_SETTLE_MS = 700;
@@ -170,10 +188,25 @@ let swellAngle = 0;
 let swellAmount = 0;
 let swellTarget = 0;
 
-// Temporary displacement while a finger drags the body. Step 18 gives it
-// a spring; until then it stays at zero and the body does not move.
+// Temporary displacement while a finger drags the body. A spring pulls it
+// back to where it was; dragging never changes the genome.
 let bodyOffsetX = 0;
 let bodyOffsetY = 0;
+let dragVelX = 0;
+let dragVelY = 0;
+let lastPointerX = 0;
+let lastPointerY = 0;
+
+// Every touch sends out one ring.
+let rippleAt = -1e9;
+let rippleX = 0;
+let rippleY = 0;
+
+// A tilt nudges once, when it changes, then waits to come back before it can
+// nudge again. Without that, a sculpture sitting slightly off-level would
+// push the creature on its own forever.
+let tiltArmed = true;
+let lastShakeAt = -1e9;
 
 // ---- Sensors --------------------------------------------------------------
 
@@ -189,6 +222,28 @@ function deviceShaken() {
   if (!window.sensorsEnabled) return;
   shakeUntil = millis() + SHAKE_FLASH_MS;
   debug('sensors: shaken');
+  const now = millis();
+  if (now - lastShakeAt < SHAKE_COOLDOWN_MS) return;
+  lastShakeAt = now;
+  nudgeGenome(SHAKE_NUDGE_GAIN); // the same function a finger calls
+}
+
+// Nudge once on the change, then wait for it to come back near rest before it
+// can nudge again. The gap between the two thresholds is the hysteresis.
+function tiltNudge() {
+  if (!window.sensorsEnabled) return;
+  const off =
+    Math.hypot(
+      wrapDegrees(rotationX - REST_TILT_X),
+      wrapDegrees(rotationY - REST_TILT_Y),
+      wrapDegrees(rotationZ - REST_TILT_Z)
+    );
+  if (tiltArmed && off > TILT_NUDGE_DEGREES) {
+    tiltArmed = false;
+    nudgeGenome(TILT_NUDGE_GAIN);
+  } else if (!tiltArmed && off < TILT_NUDGE_DEGREES * 0.5) {
+    tiltArmed = true;
+  }
 }
 
 // ---- Screen wake lock (browser API, not p5-phone) -------------------------
@@ -303,16 +358,16 @@ function applyUrlOverrides(params) {
 
 // The centre of the piece: one touch moves one or two numbers by a hair.
 // Nudging everything at once averages out into no visible change at all.
-function nudgeGenome() {
+function nudgeGenome(weight = 1) {
   const roll = random();
   if (roll < NUDGE_SHAPE_CHANCE) {
-    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE);
-    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE * 0.4);
+    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE * weight);
+    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE * 0.4 * weight);
   } else if (roll < NUDGE_SHAPE_CHANCE + 0.15) {
-    nudgeOne(pick(MOVE_FIELDS), NUDGE_MOVE);
+    nudgeOne(pick(MOVE_FIELDS), NUDGE_MOVE * weight);
   } else {
-    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR);
-    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR * 0.5);
+    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR * weight);
+    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR * 0.5 * weight);
   }
   clampGenome(genomeTarget);
   saveGenome();
@@ -459,6 +514,39 @@ function breathScale(t) {
   return map(Math.sin(phase * TWO_PI), -1, 1, CREATURE_BLOOM_MIN, CREATURE_BLOOM_MAX);
 }
 
+function drawRipple(radius) {
+  const age = millis() - rippleAt;
+  if (age < 0 || age > RIPPLE_LIFE_MS) return;
+  const t = age / RIPPLE_LIFE_MS;
+  const r = radius * RIPPLE_MAX_RADIUS * t;
+  noFill();
+  strokeWeight(BAND_STROKE + 2);
+  stroke(color(genome.hue, genome.sat, genome.bright + brightenNow(), RIPPLE_ALPHA * (1 - t) * (1 - t)));
+  ellipse(rippleX, rippleY, r * 2, r * 2 * genome.stretch);
+  noStroke();
+}
+
+function updateDrag() {
+  if (gesture && gesture.dragged) {
+    bodyOffsetX += dragVelX;
+    bodyOffsetY += dragVelY;
+    dragVelX *= 0.6; // heavy: it follows the finger rather than tracking it
+    dragVelY *= 0.6;
+  }
+  dragVelX -= bodyOffsetX * RETURN_SPRING;
+  dragVelY -= bodyOffsetY * RETURN_SPRING;
+  dragVelX *= RETURN_DAMPING;
+  dragVelY *= RETURN_DAMPING;
+  bodyOffsetX += dragVelX;
+  bodyOffsetY += dragVelY;
+
+  const reach = Math.hypot(bodyOffsetX, bodyOffsetY);
+  if (reach > DRAG_MAX_OFFSET) {
+    bodyOffsetX = (bodyOffsetX / reach) * DRAG_MAX_OFFSET;
+    bodyOffsetY = (bodyOffsetY / reach) * DRAG_MAX_OFFSET;
+  }
+}
+
 function creatureCentre() {
   const t = millis();
   const cx = width / 2 + Math.sin((t / WANDER_PERIOD_X) * TWO_PI) * WANDER_RADIUS_X + bodyOffsetX;
@@ -493,14 +581,10 @@ function finishGesture() {
   if (kind === 'tap') brightenAt = millis();
   if (kind === 'press') {
     const [cx, cy] = creatureCentre();
-    swellAngle = Math.atan2(mouseY - cy, mouseX - cx);
+    swellAngle = Math.atan2(pointerY() - cy, pointerX() - cx);
     swellTarget = 1;
   }
-  if (kind === 'drag') {
-    swellTarget = 0;
-    bodyOffsetX = 0;
-    bodyOffsetY = 0;
-  }
+  if (kind === 'drag') swellTarget = 0;
   gesture = null;
 }
 
@@ -525,22 +609,50 @@ function easeSwell() {
 // lockGestures() snapshots its handlers. Never reassign window.mouseXxx —
 // that replaces p5-phone's own wrapper. There is only one mouseReleased().
 
+// For multi-touch, read touches[] and test touches.length > 0.
+// mouseIsPressed goes false the instant *any* one finger lifts, even when
+// others are still down, so it cannot answer "is a finger on the glass".
+function pointerX() {
+  return touches.length > 0 ? touches[0].x : mouseX;
+}
+
+function pointerY() {
+  return touches.length > 0 ? touches[0].y : mouseY;
+}
+
 function mousePressed() {
   gesture = {
     start: millis(),
     deadline: millis() + GESTURE_RESET_MS,
-    x: mouseX,
-    y: mouseY,
+    x: pointerX(),
+    y: pointerY(),
     dragged: false,
   };
+  lastPointerX = gesture.x;
+  lastPointerY = gesture.y;
+  dragVelX = 0;
+  dragVelY = 0;
   return false;
 }
 
 function mouseDragged() {
   if (!gesture) return false;
-  if (!gesture.dragged && dist(mouseX, mouseY, gesture.x, gesture.y) > TAP_MAX_MOVE_PX) {
+  const px = pointerX();
+  const py = pointerY();
+
+  if (!gesture.dragged && dist(px, py, gesture.x, gesture.y) > TAP_MAX_MOVE_PX) {
     gesture.dragged = true;
-    swellTarget = 0;
+  }
+
+  if (gesture.dragged) {
+    dragVelX += (px - lastPointerX) * DRAG_PUSH_GAIN;
+    dragVelY += (py - lastPointerY) * DRAG_PUSH_GAIN;
+    lastPointerX = px;
+    lastPointerY = py;
+    // Reuse the press swell as a local stretch toward the finger.
+    const [cx, cy] = creatureCentre();
+    swellAngle = Math.atan2(py - cy, px - cx);
+    swellTarget = DRAG_STRETCH_GAIN;
   }
   return false;
 }
@@ -548,7 +660,10 @@ function mouseDragged() {
 function mouseReleased() {
   keepAwake();
   playTone();
-  nudgeGenome(); // the only place the genome ever moves
+  rippleX = pointerX();
+  rippleY = pointerY();
+  rippleAt = millis();
+  nudgeGenome(); // the only place a finger moves the genome
   finishGesture();
   return false;
 }
@@ -599,6 +714,8 @@ function draw() {
 
   easeGenome();
   easeSwell();
+  updateDrag();
+  tiltNudge();
   expireGesture();
 
   const [cx, cy] = creatureCentre();
@@ -611,6 +728,7 @@ function draw() {
   drawBody(pts, cx, cy);
   drawInnerColour(cx, cy, radius);
   drawBanding(pts, cx, cy);
+  drawRipple(radius);
   drawingContext.globalCompositeOperation = 'source-over';
 
   if (showReadout) drawReadout();
@@ -630,6 +748,8 @@ function drawReadout() {
     text('rest ' + nf(REST_TILT_X, 0, 1) + '  ' + nf(REST_TILT_Y, 0, 1) + '  ' + nf(REST_TILT_Z, 0, 1), 14, y);
     y += 16;
     text(millis() < shakeUntil ? 'SHAKEN' : 'shake -', 14, y);
+    y += 16;
+    text('tilt armed: ' + tiltArmed, 14, y);
   }
   y += 16;
   text(millis() < gestureLabelUntil ? 'gesture: ' + gestureLabel : 'gesture: -', 14, y);

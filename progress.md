@@ -2,7 +2,7 @@
 
 ## Where things are
 
-Steps 1-17 of `plan.md` are built. Steps 18-21 are not started.
+Steps 1-20 of `plan.md` are built. Step 21 is not started.
 
 ## Open problem, not yet diagnosed
 
@@ -50,6 +50,9 @@ suspect 1.
 | 15 one touch = one tiny bounded change | built |
 | 16 gesture read, label only | built |
 | 17 tap brightens, press swells | built |
+| 18 drag pushes and pulls, springs back | built |
+| 19 every touch ripples | built |
+| 20 tilt and shake nudge the same genome | built |
 
 ## Address parameters
 
@@ -70,6 +73,18 @@ end. `?reset=1` is the only way back to a clean state afterwards.
   Nothing else in the sketch may move the genome.
 - **Inner blobs and bands are kept inside by distance, not clipping.** The lobes dip to
   72% of the nominal radius, so the inner-blob margin is set against that worst case.
+- **`nudgeGenome(weight)` takes a weight.** 1 is a full finger. Tilt passes 0.5 and a
+  shake passes 0.7, so a sensor is a gentler contributor than a person. Same function,
+  not a second path.
+- **Tilt uses hysteresis, not a cooldown.** It nudges once when the phone moves more than
+  `TILT_NUDGE_DEGREES` from rest, then re-arms only once it comes back within half that.
+  A cooldown would still let a steadily-held tilt keep nudging. `?debug=1` shows
+  `tilt armed:` so you can watch it arm and disarm.
+- **Drag reuses the press swell** as a local stretch toward the finger, rather than
+  building a second deformation. `DRAG_STRETCH_GAIN` sets how much.
+- **`pointerX()` / `pointerY()`** read `touches[]` and test `touches.length > 0`, falling
+  back to `mouseX`/`mouseY`. `mouseIsPressed` is never used: it goes false the instant
+  any one finger lifts, even when others are still down.
 - **Everything in the body draws under one `lighter` composite**, reset to
   `source-over` before the next frame's `background()`. Left set, the screen smears
   instead of clearing.
@@ -93,33 +108,42 @@ browser origin, which means a brand-new empty creature.
 2. `?lobes=2` then `?lobes=7` — clearly different bump counts.
 3. `?bandGap=8` then `?bandGap=34` — tight rings then wide ones.
 4. `?edgeBlur=4` then `?edgeBlur=30` — defined rim then vapour.
-5. `?debug=1` — readout appears top-left. Click fast: `gesture: tap`. Hold: `press`.
+5. `?debug=1` — readout top-left. Click fast: `gesture: tap`. Hold: `press`.
    Drag: `drag`.
-6. `?reset=1`, then reload plain. Back to the starting creature.
-7. `?nudge=200`, then reload plain. Noticeably different, and it persists.
+6. Drag slowly across the body and let go. It follows heavily, then drifts back to centre.
+   It must not snap, and must not slide off the screen.
+7. Tap. A ring spreads from the point of contact and fades fully — no leftover trail.
+8. `?reset=1`, then reload plain. Back to the starting creature.
+9. `?nudge=200`, then reload plain. Noticeably different, and it persists.
 
 **Phone:**
 
 1. Resolve the Android problem above first.
-2. `?debug=1`, tap the icon, allow motion. `sensors on`. Tilt moves the numbers, shake
-   flashes `SHAKEN`.
+2. `?debug=1`, tap the icon, allow motion. `sensors on`.
 3. **While the piece lies still, write the three `tilt` numbers into `REST_TILT_X/Y/Z`.**
    They are zero now, correct only if the phone sits perfectly flat.
-4. Tap: the body brightens and settles. Press and hold: it bulges under your finger and
-   relaxes. Drag: the label says drag.
-5. `?nudge=200`, then reload. It changed and it stuck.
-6. `?reset=1`, reload. Back to the start.
+4. Tilt more than a few degrees: `tilt armed:` flips to false and the body nudges. Hold
+   that tilt for ten seconds — it must nudge **once**, not keep going. Bring it back to
+   rest and it re-arms.
+5. Shake: `SHAKEN` flashes and the body nudges. Shake continuously — it must not nudge
+   more than once every `SHAKE_COOLDOWN_MS`.
+6. Tap: brightens, settles, and ripples. Press and hold: bulges under your finger.
+   Drag: follows and springs back.
+7. `?nudge=200`, then reload. It changed and it stuck.
+8. `?reset=1`, reload. Back to the start.
 
 ## Next
 
-Step 18 — drag pushes and pulls. `bodyOffsetX/Y` are already threaded through
-`creatureCentre()` and are always zero; Step 18 gives them a spring so the body follows a
-finger heavily and drifts back.
+Step 21 — tuning, and nothing else. The feel of the whole piece is in the constants at
+the top of `sketch.js`: size, breathing rate, how fast the inner colour flows, how faint
+a nudge is, how long a press counts as a press, and both ends of the softness range.
 
-Then Step 19 (ripple), 20 (tilt and shake nudging the same genome), 21 (tuning).
+The one that most needs your eye is `NUDGE_SHAPE` and `NUDGE_COLOUR`. Fire
+`?nudge=200` on the phone: the creature should be clearly a different animal but still
+obviously a creature, not something broken.
 
 ## Notes for later
 
-- `mouseReleased()` now does three jobs: wake lock, tone, and the nudge. Still only one.
-- `?debug=1` earns its keep in Step 20 — it is the only way to see whether tilt and shake
-  are reporting without taking the piece apart.
+- `mouseReleased()` does the whole touch pipeline now: wake lock, tone, ripple, nudge,
+  gesture classification. Still only one.
+- `?debug=1` is how you watch tilt arming. Keep it until Step 21 is signed off.
