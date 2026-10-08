@@ -123,7 +123,7 @@ The fields are: lobes, stretch, hue, sat, bright, bandCount, bandGap, edgeBlur, 
 Make the outline a closed loop built from a number of lobes of differing size, so it has bumps and legs rather than being a circle. Add a stretch so it can be tall and thin or round and heavy.
 
 - Functions: `beginShape()` / `splineVertex()` / `endShape(CLOSE)`. The p5.js 2 rename matters here: `curveVertex()` is now `splineVertex()`.
-- **Repeat the first point as the last point** before closing. A spline calculates from its neighbours, so without the repeated point the outline leaves a kink exactly where it closes, and on a soft glowing shape that kink is the first thing the eye finds.
+- **Feed every outline point exactly once** and let `endShape(CLOSE)` join them. Do not repeat the first point at the end, and do not wrap the ends the other way. Verified in a browser against p5 2.3.2: a repeated first point gives Catmull-Rom two identical neighbours, which collapses the tangent at the seam and leaves a visible corner on the soft body; wrapping the ends instead makes `CLOSE` draw a straight chord across the body. p5 closes a spline correctly on its own.
 - Numbers: `LOBES_MIN`, `LOBES_MAX`, `STRETCH_MIN`, `STRETCH_MAX`.
 - Laptop: open `?lobes=2` and then `?lobes=7` and the outline should have a clearly different number of bumps. The same address without the parameter must not write anything back.
 - Phone: open `?lobes=5&stretch=1.4`, check the shape, then open the plain address and confirm the creature is still the one that was saved, not the pinned one.

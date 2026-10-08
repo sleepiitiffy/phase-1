@@ -4,27 +4,59 @@
 
 Steps 1-20 of `plan.md` are built. Step 21 is not started.
 
-## Open problem, not yet diagnosed
+## Verified in a browser, not just parsed
 
-**It does not work on an Android phone.** Nobody has said what that looks like, so it
-is still unknown whether this is a crash, a blank screen, a stuck permission overlay, or
-dead touch input. Do not assume the build is at fault. The first thing to do is find out
-which of those it is.
+The sketch is now verified running in a real browser against p5 2.3.2 and p5-phone 1.15.3.
+A throwaway static server is enough — sensors and sound do not work there, but rendering
+and the touch pipeline do.
 
-Two live suspects, in order of likelihood:
+- **No console errors or warnings.** (Two were found and fixed; see below.)
+- **The touch pipeline works end to end.** Dispatching `pointerdown` then `pointerup` on
+  the canvas ran `mouseReleased`, nudged the genome (hue 40 to 46.34) and wrote it to
+  `localStorage`.
+- **The p5-phone warning about assigning handlers before `lockGestures()` is a false
+  positive here.** `window.mouseReleased` is p5-phone's delegator, which calls the p5
+  instance's handler and returns `false`, so gesture blocking is intact.
+- **`showDebug()` is a DOM panel, not canvas**, and it covered a large slice of the
+  screen. It is now off unless the address carries `?debug=1`. If the Android problem
+  was partly "a grey bar across the top of the screen", that is fixed.
 
-1. **`enablePermissionsMinimal()` may not get out of the way on Android.** iOS throws a
-   system permission dialog, so the tap visibly does something and the overlay's
-   dismissal is obvious. Android Chrome grants motion with no prompt at all, so if the
-   overlay only hides after a visible grant it can sit there permanently — dimming the
-   screen and swallowing every touch, which reads as "nothing works". The laptop would
-   never show this, because a desktop also has no prompt.
-2. **`showDebug()` renders a DOM panel.** On a small Android screen it may cover most of
-   the view. Everything else in the sketch is canvas; that one is HTML.
+## Fixed: the seam was a sharp corner
 
-Fastest discriminator: load the plain address, then load it with `?debug=1`, and compare.
-If the two look materially different, suspect 2. If the plain address is dimmed or stuck,
-suspect 1.
+`traceSpline()` repeated the first outline point at the end. In p5 that does **not**
+close a spline smoothly — it gives Catmull-Rom two identical neighbours, which collapses
+the tangent at the seam and puts a visible corner on the soft body. Wrapping the ends
+the other way is worse: `endShape(CLOSE)` then draws a straight chord across the shape.
+
+Verified by rendering the real outline both ways. Feed every point exactly once and
+`endShape(CLOSE)` closes it cleanly. Fixed in `sketch.js` and in Step 9 of `plan.md`.
+
+## Fixed: two console complaints
+
+- A local `const hue` collided with `p5.hue()`. Renamed to `blobHue`.
+- `showDebug()` now only runs with `?debug=1`.
+
+## Still unresolved
+
+**It does not work on an Android phone, and nobody has said what that looks like.** The
+one lead left is `enablePermissionsMinimal()`: iOS throws a system permission dialog so
+the tap visibly does something, but Android Chrome grants motion with no prompt at all.
+If that overlay only hides after a visible grant, it can sit there permanently — dimming
+the screen and swallowing every touch. A desktop would never show it, because a desktop
+also has no prompt.
+
+Compare the plain address against `?debug=1` on the phone. If the two look materially
+different, it was the debug panel and is now fixed. If the plain address is dimmed or
+stuck, it is the overlay.
+
+## Two things that will need tuning
+
+- **The inner blobs blow out to a white disc** where all three overlap. That is additive
+  blending doing exactly what was predicted: more overlap, brighter, drifting toward
+  white. `INNER_BLOB_ALPHA` wants lowering.
+- **The body reads brown/olive** rather than the soft orange of the reference. The
+  layered passes are too dim individually and the additive result lands muddy. More
+  passes or a higher alpha on the inner passes will fix it.
 
 ## Files changed
 

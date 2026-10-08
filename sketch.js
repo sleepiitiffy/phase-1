@@ -449,15 +449,16 @@ function buildOutline(cx, cy, radius) {
   return pts;
 }
 
-// A spline is drawn through its neighbours, so the first point is repeated
-// at the end. Without it the outline leaves a kink where it closes, and on
-// a soft body that kink is the first thing the eye finds.
+// Feed every outline point exactly once and let endShape(CLOSE) join them.
+// Repeating the first point at the end does NOT close a p5 spline smoothly:
+// it gives Catmull-Rom two identical neighbours, which collapses the tangent
+// there and leaves a visible corner. Wrapping the ends the other way is worse
+// again - CLOSE then draws a straight chord across the body.
 function traceSpline(pts, cx, cy, scale) {
   beginShape();
   for (const p of pts) {
     splineVertex(cx + (p[0] - cx) * scale, cy + (p[1] - cy) * scale);
   }
-  splineVertex(cx + (pts[0][0] - cx) * scale, cy + (pts[0][1] - cy) * scale);
   endShape(CLOSE);
 }
 
@@ -485,11 +486,11 @@ function drawInnerColour(cx, cy, radius) {
     const a = (t / (INNER_FLOW_SPEED + i * 1400)) * TWO_PI + i * 2.1;
     const bx = cx + Math.cos(a) * reach * 0.6;
     const by = cy + Math.sin(a * 1.3) * reach * 0.6 * genome.stretch;
-    const hue = wrapHue(genome.hue + [-26, 18, 44][i % 3]);
+    const blobHue = wrapHue(genome.hue + [-26, 18, 44][i % 3]);
     for (let p = GLOW_PASSES - 1; p >= 0; p--) {
       const u = p / (GLOW_PASSES - 1);
       const r = INNER_BLOB_SIZE * (0.45 + 0.55 * (1 - u));
-      fill(color(hue, genome.sat, genome.bright + brightenNow(), INNER_BLOB_ALPHA * (0.3 + 0.7 * u)));
+      fill(color(blobHue, genome.sat, genome.bright + brightenNow(), INNER_BLOB_ALPHA * (0.3 + 0.7 * u)));
       ellipse(bx, by, r * 2, r * 2 * genome.stretch);
     }
   }
@@ -681,10 +682,12 @@ function setup() {
   lockGestures();
   enablePermissionsMinimal(['sensors', 'sound']);
   setShakeThreshold(SHAKE_THRESHOLD);
-  showDebug();
 
   const params = new URLSearchParams(location.search);
   showReadout = params.has('debug');
+  // The debug console is a DOM panel that covers a real slice of a phone
+  // screen, so it stays off unless asked for.
+  if (showReadout) showDebug();
 
   if (params.has('reset')) {
     try {
