@@ -71,9 +71,9 @@ Show a single small semi-transparent pulsing icon, no text box. The first tap on
 ### Step 4 — One short tone, early, to find out if sound works at all
 Do the sound now rather than near the end, because it is the most likely thing in the whole piece to fail on a phone and you want to find out while there is still room to react.
 
-Play one short soft tone on every touch, pitched from the creature's current hue so the same gesture makes a different note as the colour drifts. Start and stop the oscillator each time — never leave one running.
+Play one short soft tone on every touch, pitched from the creature's current hue so the same gesture makes a different note as the colour drifts. Set the oscillator's amplitude up and back down with `amp()`, and stop the oscillator each time — never leave one running.
 
-- Functions: p5.sound `p5.Oscillator` and `p5.Envelope`, gated on `window.soundEnabled`. Do not write your own first-tap audio unlock; the Step 3 permission already handles it.
+- Functions: p5.sound `p5.Oscillator`, gated on `window.soundEnabled`. Do not write your own first-tap audio unlock; the Step 3 permission already handles it. Use the oscillator's own `amp(value, rampTime, timeFromNow)` for the fade — **not** a `p5.Envelope`. p5 sound classes have no `setValueAtTime`, `linearRampToValueAtTime` or `exponentialRampToValueAtTime`; those are Web Audio `AudioParam` methods and calling them on a p5 object throws. Note also that `start(time)` and `stop(time)` both take a **delay from now** in seconds, not an absolute time.
 - Numbers: `TONE_BASE_HZ`, `TONE_HUE_SPREAD_HZ`, `TONE_ATTACK_MS`, `TONE_RELEASE_MS`, `TONE_VOLUME`.
 - If there is no sound: `p5.sound` 0.3.0 is written against p5.js 2.2.3 and this project loads 2.3.2, so that pairing is the first suspect. The second suspect is that `index.html` has no compatibility shim; the `p5.js-compatibility` preload script is the thing to try next. Note on a phone which of the two you tried, so you do not repeat it later.
 - Laptop: nothing. There is no real sound permission path on desktop.

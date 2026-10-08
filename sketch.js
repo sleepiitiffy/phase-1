@@ -11,7 +11,7 @@ const TONE_BASE_HZ = 220;
 const TONE_HUE_SPREAD_HZ = 110;
 const TONE_ATTACK_MS = 8;
 const TONE_RELEASE_MS = 420;
-const TONE_VOLUME = 0.06;
+const TONE_VOLUME = 0.12;
 
 // Temporary stand-in. Step 10 makes hue part of the saved genome.
 const CREATURE_HUE = 40;
@@ -56,18 +56,17 @@ function toneFrequency() {
 
 function playTone() {
   if (!window.soundEnabled) return;
-  const start = millis();
-  const stop = start + TONE_ATTACK_MS + TONE_RELEASE_MS;
+  const attack = TONE_ATTACK_MS / 1000;
+  const release = TONE_RELEASE_MS / 1000;
   try {
-    const env = new p5.Envelope();
-    env.setValueAtTime(0, start);
-    env.linearRampToValueAtTime(TONE_VOLUME, start + TONE_ATTACK_MS);
-    env.exponentialRampToValueAtTime(0.0001, stop);
-
+    // p5.sound schedules start() and stop() as a delay from now, not an
+    // absolute time, so both take seconds-from-here.
     const osc = new p5.Oscillator(toneFrequency(), 'sine');
-    osc.amp(env);
-    osc.start(start / 1000);
-    osc.stop((stop + 40) / 1000);
+    osc.amp(0, 0); // silent from the very first sample, so no click
+    osc.amp(TONE_VOLUME, attack); // fade up
+    osc.amp(0, release, attack); // fade back down, starting at the top
+    osc.start();
+    osc.stop(attack + release + 0.06);
   } catch (err) {
     debugWarn('tone failed: ' + err.message);
   }

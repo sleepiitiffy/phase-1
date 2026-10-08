@@ -33,6 +33,22 @@ which is what makes the same touch play a different note as the creature drifts.
 **Nothing has been checked in a browser or on a phone.** No laptop check and no phone
 check from Steps 1-5 has been run yet. Those are yours to run.
 
+## Two things found and fixed while writing Step 4
+
+- `setValueAtTime` / `linearRampToValueAtTime` / `exponentialRampToValueAtTime` **do not
+  exist on p5.sound objects.** They are Web Audio `AudioParam` methods. p5's `Envelope`
+  exposes `setADSR`, `setRange`, `setExp`, `play`, `triggerAttack`, `triggerRelease`,
+  `ramp` — no ramp methods of that kind, and `p5.Oscillator.amp()` is the one that does.
+  The tone now uses the oscillator's own `amp(value, rampTime, timeFromNow)`. A p5
+  `Envelope` is not used anywhere in this sketch.
+- **`p5.Oscillator.start(time)` and `stop(time)` both take a delay from now**, in
+  seconds, not an absolute time — the source adds the current audio time internally. The
+  earlier version passed a `millis()`-derived number to `stop()`, which would have
+  scheduled the stop tens of seconds in the future.
+
+`TONE_VOLUME` was raised from 0.06 to 0.12 so the first test confirms something audible.
+The oscillator's own default gain is 0.5, and `amp()` overwrites it.
+
 ## What to check, in this order
 
 **Laptop:**
