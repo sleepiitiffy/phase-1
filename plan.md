@@ -114,6 +114,7 @@ Define the whole genome now as a single plain object with every field the finish
 The fields are: lobes, stretch, hue, sat, bright, bandCount, bandGap, edgeBlur, breathPeriod. Steps 9 to 13 fill them in; none of them add a new field.
 
 - Functions: `localStorage` `setItem()` / `getItem()`, called synchronously. This is not asset loading, so there is nothing to `await` and `setup()` stays a normal function. A plain object is the right container — p5's `createStringDict()` and `p5.TypedDict` no longer exist in p5.js 2. Native array methods like `splice()` and `sort()` are the ordinary JavaScript ones and are fine; it is only the p5 versions that are gone.
+- **Let any genome field be pinned from the address**, so both ends of every range can be looked at before anything exists that changes them — Steps 9 to 13 render fixed values until Step 15 introduces the nudge. A pinned genome is never saved back, so a test page cannot rewrite the creature that is really on the phone. This is also the check for Steps 12 and 13, which otherwise have no way to see the far end of their range.
 - Numbers: `GENOME_KEY`, `GENOME_SAVE_DELAY_MS`.
 - Laptop: change something, reload, it comes back changed.
 - Phone: change something, switch to another app, come back — still changed. Put it in airplane mode and reload — still changed.
@@ -124,16 +125,16 @@ Make the outline a closed loop built from a number of lobes of differing size, s
 - Functions: `beginShape()` / `splineVertex()` / `endShape(CLOSE)`. The p5.js 2 rename matters here: `curveVertex()` is now `splineVertex()`.
 - **Repeat the first point as the last point** before closing. A spline calculates from its neighbours, so without the repeated point the outline leaves a kink exactly where it closes, and on a soft glowing shape that kink is the first thing the eye finds.
 - Numbers: `LOBES_MIN`, `LOBES_MAX`, `STRETCH_MIN`, `STRETCH_MAX`.
-- Laptop: click and the outline shifts a little toward its next form. Nothing should happen between clicks.
-- Phone: touch and the outline shifts a little. It never jumps to a different animal; over a whole day of touching it should be visibly not what it was this morning.
+- Laptop: open `?lobes=2` and then `?lobes=7` and the outline should have a clearly different number of bumps. The same address without the parameter must not write anything back.
+- Phone: open `?lobes=5&stretch=1.4`, check the shape, then open the plain address and confirm the creature is still the one that was saved, not the pinned one.
 
 ### Step 10 — Colour drifts
 Give the creature a hue, a saturation and a brightness, each with its own range, and let the hue travel all the way around the colour wheel. Keep the palette soft — low-to-mid saturation, high brightness, nothing neon and nothing brown.
 
 - Functions: `colorMode(HSB)`, `color()`, `fill()`, and a small helper that keeps hue inside 0–360 by wrapping rather than clamping, so the colour travels past 360 instead of sticking to the end of the range.
 - Numbers: `HUE_MIN`, `HUE_MAX`, `SAT_MIN`, `SAT_MAX`, `BRIGHT_MIN`, `BRIGHT_MAX`.
-- Laptop: click repeatedly and the colour walks around the wheel, never jumping or snapping.
-- Phone: same, one touch at a time.
+- Laptop: open `?hue=0&sat=35&bright=62`, then `?hue=210&sat=78&bright=96`, and the two should be plainly different colours of the same soft body. Neither should ever look neon or muddy brown, because those are outside the ranges.
+- Phone: same, with `?hue=40&sat=60&bright=85`.
 
 ### Step 11 — Colour flows inside the body
 Put two or three soft blobs of colour inside the creature that drift slowly around inside it on their own, between touches. Leave the page alone and confirm they never leave the body.
@@ -169,7 +170,7 @@ Keep the creature in the middle third of the screen but let its centre drift slo
 This is the centre of the piece. Build a single function that nudges the genome — a small random amount on one or two values, never more than a hair, always clamped back inside its range. Call it once per touch and from nowhere else. Nothing else in the sketch is allowed to change the genome.
 
 - Functions: `random()`, `map()`, `constrain()`, `lerp()`, and a save call behind the same delay as Step 8.
-- **Build a way to fire many nudges at once before you test this.** Slow accumulation is the whole thesis and clicking two hundred times by hand is how you end up convinced it does not work. A query parameter on the address that fires `TEST_NUDGE_COUNT` nudges on load is the cheapest way, and it is the only way to check the thing you actually care about.
+- **Build a way to look at any value without waiting for the creature to drift there.** Slow accumulation is the whole thesis and clicking two hundred times by hand is how you end up convinced it does not work. Two pieces: a query parameter that fires `TEST_NUDGE_COUNT` nudges on load, and — needed earlier, by Steps 9, 10, 12 and 13 — a query parameter that pins any genome field directly, such as `?lobes=2&hue=210&edgeBlur=4`. Pinning must not overwrite the creature actually saved on the phone, so a pinned genome is never written back.
 - Numbers: `NUDGE_SHAPE`, `NUDGE_COLOUR`, `NUDGE_MOVE`, `NUDGE_SHAPE_CHANCE` (chance that a touch moves shape rather than colour), `NUDGE_EASE_IN` (how long a change takes to arrive, so nothing snaps), `TEST_NUDGE_COUNT`.
 - Laptop: fire twenty nudges and nothing should look different enough to point at. Fire two hundred and it should be clearly a different creature.
 - Phone: same, with a finger, in real time.

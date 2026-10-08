@@ -2,12 +2,13 @@
 
 ## Where things are
 
-Steps 1-5 of `plan.md` are built. Steps 6-21 are not started.
+Steps 1-10 of `plan.md` are built. Steps 11-21 are not started.
 
-Two files changed:
+## Files changed
 
-- `sketch.js` — rewritten. Canvas, gesture lock, permission prompt, tone, wake lock.
-- `index.html` — one line added: the `p5.sound@0.3.0` script tag between p5 and p5-phone.
+- `sketch.js` — rewritten through Step 10.
+- `index.html` — one line added: the `p5.sound@0.3.0` script tag between p5 and p5-phone (Step 3).
+- `plan.md` — Steps 8, 9, 10 and 15 edited to fix an ordering fault (below).
 
 ## What is built
 
@@ -18,84 +19,92 @@ Two files changed:
 | 3 — one quiet prompt for motion + sound, `showDebug()` on | built |
 | 4 — one short tone per touch | built |
 | 5 — screen wake lock | built |
+| 6 — sensors read; `?debug=1` readout | built |
+| 7 — soft glowing body, breathing | built |
+| 8 — genome, `localStorage`, URL pinning | built |
+| 9 — silhouette from lobes and stretch | built |
+| 10 — colour from the genome | built |
 
-Tunables are at the top of `sketch.js`: `RESTING_FRAME_RATE`, `PIXEL_DENSITY_CAP`,
-`TONE_BASE_HZ`, `TONE_HUE_SPREAD_HZ`, `TONE_ATTACK_MS`, `TONE_RELEASE_MS`,
-`TONE_VOLUME`, `CREATURE_HUE`.
+`saveGenome()` exists and is called from nothing yet. That is deliberate — Step 15 is the
+first thing that changes the genome, and it calls it.
 
-`CREATURE_HUE` is a stand-in at a fixed 40. Step 10 replaces it with the genome's hue,
-which is what makes the same touch play a different note as the creature drifts.
+## The ordering fault, and the fix
+
+Steps 9 and 10 originally told you to check the silhouette and the colour **by clicking to
+change them**, but the thing that changes them does not exist until Step 15. Steps 12 and
+13 had the same problem in milder form: "check both ends of the range" with no way to get
+to either end.
+
+Fixed by pinning any genome field from the address:
+
+    ?lobes=2&stretch=1.4&hue=210&edgeBlur=4&debug=1
+
+`?debug=1` shows the Step 6 sensor readout, which is otherwise off. A pinned genome is
+never saved back, so a test page cannot overwrite the real creature.
+
+## Two bugs found while writing Step 9
+
+- **Lobe count did not control lobe count.** The outline was sampling Perlin noise around
+  a circle whose radius scaled with `genome.lobes`, but the radius was too small
+  relative to the noise's feature size, so every value produced roughly the same one or
+  two humps. Replaced with a `cos(angle * lobes)` bump term, so `genome.lobes` is now
+  literally the number of bumps, plus a small noise term to break the symmetry.
+- **The edge-softness range was invisible.** `edgeBlur` was being divided by
+  `CREATURE_SIZE`, which made its whole range span about two percent of the body. Now
+  divided by 100, giving 4% to 30% falloff.
 
 ## How it was checked
 
-`sketch.js` passes a syntax check. That is all that has been verified.
+`sketch.js` passes a syntax check. That is all.
 
-**Nothing has been checked in a browser or on a phone.** No laptop check and no phone
-check from Steps 1-5 has been run yet. Those are yours to run.
+**Nothing has been checked in a browser or on a phone.** Every check below is yours.
 
-## Two things found and fixed while writing Step 4
+## What to check
 
-- `setValueAtTime` / `linearRampToValueAtTime` / `exponentialRampToValueAtTime` **do not
-  exist on p5.sound objects.** They are Web Audio `AudioParam` methods. p5's `Envelope`
-  exposes `setADSR`, `setRange`, `setExp`, `play`, `triggerAttack`, `triggerRelease`,
-  `ramp` — no ramp methods of that kind, and `p5.Oscillator.amp()` is the one that does.
-  The tone now uses the oscillator's own `amp(value, rampTime, timeFromNow)`. A p5
-  `Envelope` is not used anywhere in this sketch.
-- **`p5.Oscillator.start(time)` and `stop(time)` both take a delay from now**, in
-  seconds, not an absolute time — the source adds the current audio time internally. The
-  earlier version passed a `millis()`-derived number to `stop()`, which would have
-  scheduled the stop tens of seconds in the future.
-
-`TONE_VOLUME` was raised from 0.06 to 0.12 so the first test confirms something audible.
-The oscillator's own default gain is 0.5, and `amp()` overwrites it.
-
-## What to check, in this order
+Use a permanent https address, not the `npm run phone` tunnel. A new tunnel URL is a new
+browser origin, which means a brand-new empty creature.
 
 **Laptop:**
 
-1. A black rectangle fills the window, and it resizes when you resize the window.
-2. Swiping and right-clicking do nothing.
-3. A small semi-transparent pulsing icon sits over the black. Click it once.
-4. Nothing else happens. No creature yet, and that is correct.
+1. Open the plain address. Black, one quiet icon, click it once. Nothing else — no
+   creature yet on a laptop is fine, but you should see the body appear.
+2. The body should be a soft glowing shape in the middle, slowly swelling and shrinking
+   on its own. No wobble, no jitter.
+3. Open `?lobes=2`, then `?lobes=7`. Clearly different numbers of bumps.
+4. Open `?hue=210&sat=78&bright=96`. Plainly a different colour.
+5. Open `?edgeBlur=4`, then `?edgeBlur=30`. The first has a defined rim, the second is
+   vapour.
+6. Open the plain address again. The creature must be the one from step 2 — pinning must
+   not have written anything back.
 
-**Phone — use a permanent https address, not the `npm run phone` tunnel.** The tunnel
-prints a new URL when it drops, and a new URL means new browser storage, which means an
-empty creature. Test on GitHub Pages or any fixed address.
+**Phone:**
 
-1. Open the address. You get black with one small quiet icon.
-2. Tap the icon once. It disappears, the phone asks about motion, you allow it.
-   That tap does not reach the sketch — it is spent on the overlay.
-3. Tap again, anywhere on the black. You should hear one short soft note.
-   Tap rapidly ten times: ten notes, no drone, no chord.
-4. Now leave it alone for two minutes. The screen must still be lit.
-   Lock the phone with the side button, unlock it, and confirm the sketch is back
-   and the lock came back with it.
-5. Check the debug readout on screen for `wake lock held`. If it says
-   `wake lock refused`, the wake lock is not working and the screen will dim.
-
-**If step 3 of the phone check gives no sound**, work through the plan's Step 4
-fallbacks in order and note which you tried:
-
-1. `p5.sound@0.3.0` is written against p5.js 2.2.3; this project loads 2.3.2. That
-   pairing is the first suspect.
-2. `index.html` has no compatibility shim. Add `p5.js-compatibility@0.2.0/src/preload.js`
-   after p5 and before p5.sound.
+1. Open `?debug=1`. Tap the icon, allow motion.
+2. The readout should say `sensors on`. Tilt the phone: `tilt` numbers move. Shake it:
+   `SHAKEN` flashes, and `sensors: shaken` appears in the debug log.
+3. **While the piece is lying still, write the three `tilt` numbers into `REST_TILT_X`,
+   `REST_TILT_Y`, `REST_TILT_Z` at the top of `sketch.js`.** They are all zero now, which
+   is only correct if the phone will sit perfectly flat. Re-measure if you re-mount it.
+4. Tap anywhere. One short soft note. Tap fast ten times: ten notes, no drone.
+5. Leave it two minutes. The screen is still lit. Side-button lock, unlock: sketch back,
+   lock back.
+6. Open the plain address, reload, and confirm the body comes back identical. Then
+   open `?lobes=5`, reload, and open plain again — still the original.
 
 ## Next
 
-Step 6 — prove the sensors read. Draws a white tilt readout and a `SHAKEN` flash, and
-**Step 7 deletes that readout**, so it is temporary.
+Step 11 — colour flows inside the body. This is the one that makes it alive between
+visitors, so it is the step worth checking most carefully. The internal colour has to stay
+inside the body by distance, not by clipping to a hard outline path, which would give a
+crisp rim and fight the soft edge.
 
-Then Step 8 — the genome. It defines all nine fields up front (`lobes`, `stretch`,
-`hue`, `sat`, `bright`, `bandCount`, `bandGap`, `edgeBlur`, `breathPeriod`) and adds
-`localStorage` persistence. This is the piece that makes a day's visitors accumulate,
-so it is worth getting right before anything pretty is layered on top.
+Then Step 12 (banding), 13 (edge as a genome value), 14 (wandering), and Step 15, which
+is the centre of the piece.
 
 ## Notes for later
 
-- `mouseReleased()` already exists and already does two jobs (wake lock, tone). Step 16
-  adds gesture detection to it. Do not create a second one.
-- `showDebug()` stays on until the end. Several later steps depend on being able to read
-  a message on the device.
-- Only one file changed outside `sketch.js`, and it was the `index.html` script tag that
-  Step 3 calls for.
+- `mouseReleased()` already exists and does two jobs (wake lock, tone). Step 16 adds
+  gesture detection to it. Do not create a second one.
+- `?debug=1` is worth keeping for Step 20 — it is the only way to see whether tilt and
+  shake are reporting without taking the finished piece apart.
+- `showDebug()` stays on until the end.

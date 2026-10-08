@@ -15,6 +15,13 @@ const TONE_RELEASE_MS = 420;
 const TONE_VOLUME = 0.12;
 
 const SHAKE_THRESHOLD = 25;
+const SHAKE_FLASH_MS = 600;
+
+// How the phone is sitting in the sculpture. Fill these in from the Step 6
+// readout while the piece is at rest, and re-measure if it is re-mounted.
+const REST_TILT_X = 0;
+const REST_TILT_Y = 0;
+const REST_TILT_Z = 0;
 
 // Body
 const CREATURE_SIZE = 220; // diameter in pixels
@@ -28,7 +35,7 @@ const CREATURE_BLOOM_MAX = 1.06;
 const SILHOUETTE_SAMPLES = 72;
 const LOBE_DEPTH = 0.28; // fixed look, not a genome value
 
-// Genome ranges. These are the only seven things a touch will ever change.
+// Genome ranges. A touch will only ever nudge a couple of these.
 const LOBES_MIN = 2;
 const LOBES_MAX = 7;
 const STRETCH_MIN = 0.72;
@@ -99,6 +106,51 @@ let saveTimer = null;
 
 let wakeLock = null;
 let wantAwake = false;
+
+// Sensor readout, off unless the address carries ?debug=1. Step 6 needs it
+// to prove the sensors read, and Step 20 needs it again.
+let showReadout = false;
+let shakeUntil = 0;
+
+// ---- Sensors --------------------------------------------------------------
+
+// rotationX wraps at plus and minus 180, so a raw subtraction spikes when it
+// crosses. Fold it back into -180..180 first.
+function wrapDegrees(delta) {
+  let v = (delta + 540) % 360;
+  if (v < 0) v += 360;
+  return v - 180;
+}
+
+function deviceShaken() {
+  if (!window.sensorsEnabled) return;
+  shakeUntil = millis() + SHAKE_FLASH_MS;
+  debug('sensors: shaken');
+}
+
+function drawReadout() {
+  push();
+  textSize(13);
+  textAlign(LEFT, TOP);
+  fill(0, 0, 100);
+  let y = 14;
+  text('sensors ' + (window.sensorsEnabled ? 'on' : 'OFF'), 14, y);
+  y += 16;
+  if (window.sensorsEnabled) {
+    text('tilt ' + nf(rotationX, 0, 1) + '  ' + nf(rotationY, 0, 1) + '  ' + nf(rotationZ, 0, 1), 14, y);
+    y += 16;
+    text('dX ' + nf(wrapDegrees(rotationX - pRotationX), 0, 2), 14, y);
+    y += 16;
+    text('rest ' + nf(REST_TILT_X, 0, 1) + '  ' + nf(REST_TILT_Y, 0, 1) + '  ' + nf(REST_TILT_Z, 0, 1), 14, y);
+    y += 16;
+    text(millis() < shakeUntil ? 'SHAKEN' : 'shake -', 14, y);
+  }
+  pop();
+}
+
+function userSetupComplete() {
+  debug('ready. sensors: ' + window.sensorsEnabled + '  sound: ' + window.soundEnabled);
+}
 
 // ---- Screen wake lock (browser API, not p5-phone) -------------------------
 
@@ -215,10 +267,13 @@ function bodyColour(alpha) {
 }
 
 // Smooth and stable: the same genome always produces the same creature.
+// The bump term is driven by lobe count directly, so genome.lobes really is
+// the number of bumps. The noise term only breaks the symmetry a little.
 function outlineVariation(angle) {
-  const k = genome.lobes * 0.5;
-  const n = noise(Math.cos(angle) * k + 20, Math.sin(angle) * k + 20);
-  return 1 + LOBE_DEPTH * (n - 0.5) * 2;
+  const lobes = Math.max(1, genome.lobes);
+  const bump = Math.cos(angle * lobes);
+  const organic = noise(Math.cos(angle) * 1.3 + 20, Math.sin(angle) * 1.3 + 20) - 0.5;
+  return 1 + LOBE_DEPTH * (bump * 0.7 + organic * 0.6);
 }
 
 function buildOutline(cx, cy, radius) {
@@ -246,8 +301,10 @@ function traceSpline(pts, cx, cy, scale) {
 // The softness is built from layered low-alpha fills, not from a canvas
 // blur. A canvas blur is missing on some phones and fails silently there,
 // taking the whole look with it.
-function drawBody(pts, cx, cy, radius) {
-  const spread = genome.edgeBlur / CREATURE_SIZE;
+function drawBody(pts, cx, cy) {
+  // edgeBlur is in pixels of falloff; /100 turns it into a fraction of the
+  // body size so the whole range is actually visible.
+  const spread = genome.edgeBlur / 100;
   drawingContext.globalCompositeOperation = 'lighter';
   for (let i = GLOW_PASSES - 1; i >= 0; i--) {
     const t = i / (GLOW_PASSES - 1); // 0 is the outermost, faintest pass
@@ -281,13 +338,16 @@ function setup() {
   createCanvas(windowWidth, windowHeight);
   pixelDensity(Math.min(window.devicePixelRatio, PIXEL_DENSITY_CAP));
   frameRate(RESTING_FRAME_RATE);
+  angleMode(DEGREES); // rotationX/Y/Z are radians without this
   colorMode(HSB, 360, 100, 100, 1);
-  background(0);
+  background(0, 0, 0);
 
   lockGestures();
   enablePermissionsMinimal(['sensors', 'sound']);
   setShakeThreshold(SHAKE_THRESHOLD);
   showDebug();
+
+  showReadout = new URLSearchParams(location.search).has('debug');
 
   loadGenome();
   applyUrlOverrides();
@@ -297,15 +357,16 @@ function setup() {
 }
 
 function draw() {
-  background(0);
-  if (!window.sensorsEnabled) return;
+  background(0, 0, 0);
 
   const cx = width / 2;
   const cy = height * CREATURE_CENTRE_Y_FRAC;
   const radius = (CREATURE_SIZE / 2) * breathScale(millis());
 
   const pts = buildOutline(cx, cy, radius);
-  drawBody(pts, cx, cy, radius);
+  drawBody(pts, cx, cy);
+
+  if (showReadout) drawReadout();
 }
 
 function windowResized() {
