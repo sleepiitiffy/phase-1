@@ -1,7 +1,9 @@
 // A soft glowing creature on a phone.
-// Steps 1-10 of plan.md: canvas, gesture lock, the quiet first-run prompt,
-// a short tone per touch, holding the screen awake, the sensors, the first
-// glowing body, the saved genome, the drifting silhouette, and its colour.
+// Steps 1-17 of plan.md.
+//
+// The creature is one plain object of nine numbers. A touch nudges one or two
+// of them by a hair; everything else you see is those nine numbers being read.
+// Nothing else in this sketch is allowed to change the genome.
 
 // ---- Tunables -------------------------------------------------------------
 
@@ -35,7 +37,49 @@ const CREATURE_BLOOM_MAX = 1.06;
 const SILHOUETTE_SAMPLES = 72;
 const LOBE_DEPTH = 0.28; // fixed look, not a genome value
 
-// Genome ranges. A touch will only ever nudge a couple of these.
+// Colour drifting inside the body
+const INNER_BLOBS = 3;
+const INNER_FLOW_SPEED = 9000; // ms for one loop
+const INNER_BLOB_SIZE = 26;
+const INNER_BLOB_ALPHA = 0.1;
+const INNER_BLOB_MARGIN = 0.35; // how far inside the edge their centres stay
+
+// Banding
+const BAND_STROKE = 1.6;
+const BAND_ALPHA = 0.12;
+const BAND_FLOOR = 0.18; // stop drawing rings below this fraction of the body
+
+// Wandering
+const WANDER_RADIUS_X = 26;
+const WANDER_RADIUS_Y = 42;
+const WANDER_PERIOD_X = 17000; // ms
+const WANDER_PERIOD_Y = 23000; // ms
+const WANDER_CEIL = 0.24; // fraction of canvas height
+const WANDER_FLOOR = 0.76;
+
+// One touch means one tiny bounded change
+const NUDGE_SHAPE = 0.35;
+const NUDGE_COLOUR = 7;
+const NUDGE_MOVE = 180;
+const NUDGE_SHAPE_CHANCE = 0.5; // chance a touch moves shape rather than colour
+const NUDGE_EASE_IN = 0.05; // per 60fps frame, how fast the body catches up
+const TEST_NUDGE_COUNT = 200;
+
+// Reading a gesture
+const TAP_MAX_MS = 260;
+const TAP_MAX_MOVE_PX = 14;
+const PRESS_MIN_MS = 420;
+const GESTURE_RESET_MS = 15000; // watchdog for a touch that never releases
+
+// Tap brightens, press swells
+const BRIGHTEN_AMOUNT = 16;
+const BRIGHTEN_SETTLE_MS = 700;
+const SWELL_AMOUNT = 0.22; // fraction of the body radius
+const SWELL_RADIUS = 0.7; // radians, how wide the swell is
+const SWELL_EASE_IN = 0.18;
+const SWELL_EASE_OUT = 0.07;
+
+// Genome ranges
 const LOBES_MIN = 2;
 const LOBES_MAX = 7;
 const STRETCH_MIN = 0.72;
@@ -57,6 +101,17 @@ const BREATH_PERIOD_MAX = 9000;
 
 const GENOME_KEY = 'the-creature-genome';
 const GENOME_SAVE_DELAY_MS = 400;
+const GENOME_DEFAULT = {
+  lobes: 3,
+  stretch: 1,
+  hue: 40,
+  sat: 55,
+  bright: 82,
+  bandCount: 3,
+  bandGap: 18,
+  edgeBlur: 12,
+  breathPeriod: 6000,
+};
 
 // ---- Genome ---------------------------------------------------------------
 
@@ -85,20 +140,15 @@ const GENOME_RANGES = {
   breathPeriod: [BREATH_PERIOD_MIN, BREATH_PERIOD_MAX],
 };
 
-let genome = {
-  lobes: 3,
-  stretch: 1,
-  hue: 40,
-  sat: 55,
-  bright: 82,
-  bandCount: 3,
-  bandGap: 18,
-  edgeBlur: 12,
-  breathPeriod: 6000,
-};
+const SHAPE_FIELDS = ['lobes', 'stretch'];
+const COLOUR_FIELDS = ['hue', 'sat', 'bright'];
+const MOVE_FIELDS = ['breathPeriod'];
 
-// Set when a URL parameter pins the genome, so a test page never rewrites
-// the creature that is actually saved on the phone.
+// genomeTarget is what a touch moves, what is pinned, and what is saved.
+// genome is what gets drawn, easing toward the target so nothing ever snaps.
+let genomeTarget = { ...GENOME_DEFAULT };
+let genome = { ...GENOME_DEFAULT };
+
 let genomeIsPinned = false;
 let saveTimer = null;
 
@@ -107,10 +157,23 @@ let saveTimer = null;
 let wakeLock = null;
 let wantAwake = false;
 
-// Sensor readout, off unless the address carries ?debug=1. Step 6 needs it
-// to prove the sensors read, and Step 20 needs it again.
+// Off unless the address carries ?debug=1. Also where the gesture label shows.
 let showReadout = false;
 let shakeUntil = 0;
+
+let gesture = null;
+let gestureLabel = '';
+let gestureLabelUntil = 0;
+
+let brightenAt = -1e9;
+let swellAngle = 0;
+let swellAmount = 0;
+let swellTarget = 0;
+
+// Temporary displacement while a finger drags the body. Step 18 gives it
+// a spring; until then it stays at zero and the body does not move.
+let bodyOffsetX = 0;
+let bodyOffsetY = 0;
 
 // ---- Sensors --------------------------------------------------------------
 
@@ -126,30 +189,6 @@ function deviceShaken() {
   if (!window.sensorsEnabled) return;
   shakeUntil = millis() + SHAKE_FLASH_MS;
   debug('sensors: shaken');
-}
-
-function drawReadout() {
-  push();
-  textSize(13);
-  textAlign(LEFT, TOP);
-  fill(0, 0, 100);
-  let y = 14;
-  text('sensors ' + (window.sensorsEnabled ? 'on' : 'OFF'), 14, y);
-  y += 16;
-  if (window.sensorsEnabled) {
-    text('tilt ' + nf(rotationX, 0, 1) + '  ' + nf(rotationY, 0, 1) + '  ' + nf(rotationZ, 0, 1), 14, y);
-    y += 16;
-    text('dX ' + nf(wrapDegrees(rotationX - pRotationX), 0, 2), 14, y);
-    y += 16;
-    text('rest ' + nf(REST_TILT_X, 0, 1) + '  ' + nf(REST_TILT_Y, 0, 1) + '  ' + nf(REST_TILT_Z, 0, 1), 14, y);
-    y += 16;
-    text(millis() < shakeUntil ? 'SHAKEN' : 'shake -', 14, y);
-  }
-  pop();
-}
-
-function userSetupComplete() {
-  debug('ready. sensors: ' + window.sensorsEnabled + '  sound: ' + window.soundEnabled);
 }
 
 // ---- Screen wake lock (browser API, not p5-phone) -------------------------
@@ -180,7 +219,7 @@ function onVisibilityChange() {
 // ---- Tone -----------------------------------------------------------------
 
 function toneFrequency() {
-  return TONE_BASE_HZ + map(genome.hue, 0, 360, -TONE_HUE_SPREAD_HZ, TONE_HUE_SPREAD_HZ);
+  return TONE_BASE_HZ + map(genomeTarget.hue, 0, 360, -TONE_HUE_SPREAD_HZ, TONE_HUE_SPREAD_HZ);
 }
 
 function playTone() {
@@ -203,11 +242,12 @@ function playTone() {
 
 // ---- Genome ---------------------------------------------------------------
 
-function clampGenome() {
+function clampGenome(g) {
   for (const field of GENOME_FIELDS) {
     const [lo, hi] = GENOME_RANGES[field];
-    genome[field] = constrain(genome[field], lo, hi);
+    g[field] = constrain(g[field], lo, hi);
   }
+  return g;
 }
 
 function loadGenome() {
@@ -217,9 +257,10 @@ function loadGenome() {
     const saved = JSON.parse(raw);
     for (const field of GENOME_FIELDS) {
       if (typeof saved[field] === 'number' && isFinite(saved[field])) {
-        genome[field] = saved[field];
+        genomeTarget[field] = saved[field];
       }
     }
+    clampGenome(genomeTarget);
     debug('genome loaded');
   } catch (err) {
     debugWarn('genome load failed: ' + err.message);
@@ -232,7 +273,7 @@ function saveGenome() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     try {
-      localStorage.setItem(GENOME_KEY, JSON.stringify(genome));
+      localStorage.setItem(GENOME_KEY, JSON.stringify(genomeTarget));
       debug('genome saved');
     } catch (err) {
       debugWarn('genome save failed: ' + err.message);
@@ -240,16 +281,16 @@ function saveGenome() {
   }, GENOME_SAVE_DELAY_MS);
 }
 
-// Any genome field can be pinned from the address, so both ends of every
-// range can be looked at without waiting days for one to drift there:
+// Any genome field can be pinned from the address, so both ends of every range
+// can be looked at without waiting days for one to drift there:
 //   ?lobes=2&stretch=1.4&hue=210&edgeBlur=4
-function applyUrlOverrides() {
-  const params = new URLSearchParams(location.search);
+function applyUrlOverrides(params) {
   let pinned = false;
   for (const field of GENOME_FIELDS) {
     if (!params.has(field)) continue;
     const value = Number(params.get(field));
     if (isFinite(value)) {
+      genomeTarget[field] = value;
       genome[field] = value;
       pinned = true;
     }
@@ -260,10 +301,62 @@ function applyUrlOverrides() {
   }
 }
 
+// The centre of the piece: one touch moves one or two numbers by a hair.
+// Nudging everything at once averages out into no visible change at all.
+function nudgeGenome() {
+  const roll = random();
+  if (roll < NUDGE_SHAPE_CHANCE) {
+    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE);
+    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE * 0.4);
+  } else if (roll < NUDGE_SHAPE_CHANCE + 0.15) {
+    nudgeOne(pick(MOVE_FIELDS), NUDGE_MOVE);
+  } else {
+    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR);
+    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR * 0.5);
+  }
+  clampGenome(genomeTarget);
+  saveGenome();
+}
+
+function nudgeOne(field, amount) {
+  const [lo, hi] = GENOME_RANGES[field];
+  if (field === 'hue') {
+    // hue is a circle, so it wraps past 360 instead of sticking at the end
+    genomeTarget.hue = wrapHue(genomeTarget.hue + random(-amount, amount));
+  } else {
+    genomeTarget[field] = constrain(genomeTarget[field] + random(-amount, amount), lo, hi);
+  }
+}
+
+function pick(list) {
+  return list[Math.floor(random() * list.length)];
+}
+
+function easeGenome() {
+  // frame-rate independent, so a slow phone settles at the same speed
+  const k = 1 - Math.pow(1 - NUDGE_EASE_IN, Math.max(0.1, deltaTime / 16.67));
+  for (const field of GENOME_FIELDS) {
+    genome[field] += (genomeTarget[field] - genome[field]) * k;
+  }
+}
+
 // ---- Shape and colour -----------------------------------------------------
 
+function wrapHue(h) {
+  const range = HUE_MAX - HUE_MIN;
+  let v = (h - HUE_MIN) % range;
+  if (v < 0) v += range;
+  return v + HUE_MIN;
+}
+
+function brightenNow() {
+  const age = millis() - brightenAt;
+  if (age < 0 || age > BRIGHTEN_SETTLE_MS) return 0;
+  return BRIGHTEN_AMOUNT * Math.sin((age / BRIGHTEN_SETTLE_MS) * PI);
+}
+
 function bodyColour(alpha) {
-  return color(genome.hue, genome.sat, genome.bright, alpha);
+  return color(genome.hue, genome.sat, genome.bright + brightenNow(), alpha);
 }
 
 // Smooth and stable: the same genome always produces the same creature.
@@ -276,11 +369,26 @@ function outlineVariation(angle) {
   return 1 + LOBE_DEPTH * (bump * 0.7 + organic * 0.6);
 }
 
+// A soft press leaves a bulge under the finger. Nothing here touches the
+// genome: it is temporary and it is gone a second later.
+function swellOffset(angle, radius) {
+  if (swellAmount <= 0.001) return 0;
+  const d = wrapRadians(angle - swellAngle);
+  const w = Math.exp(-(d * d) / (2 * SWELL_RADIUS * SWELL_RADIUS));
+  return SWELL_AMOUNT * radius * swellAmount * w;
+}
+
+function wrapRadians(d) {
+  let v = (d + PI) % TWO_PI;
+  if (v < 0) v += TWO_PI;
+  return v - PI;
+}
+
 function buildOutline(cx, cy, radius) {
   const pts = [];
   for (let i = 0; i < SILHOUETTE_SAMPLES; i++) {
     const a = (i / SILHOUETTE_SAMPLES) * TWO_PI;
-    const r = radius * outlineVariation(a);
+    const r = radius * outlineVariation(a) + swellOffset(a, radius);
     pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r * genome.stretch]);
   }
   return pts;
@@ -298,21 +406,52 @@ function traceSpline(pts, cx, cy, scale) {
   endShape(CLOSE);
 }
 
-// The softness is built from layered low-alpha fills, not from a canvas
-// blur. A canvas blur is missing on some phones and fails silently there,
-// taking the whole look with it.
+// The softness is built from layered low-alpha fills, not from a canvas blur.
+// A canvas blur is missing on some phones and fails silently there, taking
+// the whole look with it.
 function drawBody(pts, cx, cy) {
   // edgeBlur is in pixels of falloff; /100 turns it into a fraction of the
   // body size so the whole range is actually visible.
   const spread = genome.edgeBlur / 100;
-  drawingContext.globalCompositeOperation = 'lighter';
   for (let i = GLOW_PASSES - 1; i >= 0; i--) {
     const t = i / (GLOW_PASSES - 1); // 0 is the outermost, faintest pass
     fill(bodyColour(GLOW_ALPHA * (0.3 + 0.7 * t)));
     traceSpline(pts, cx, cy, 1 + spread * (1 - t));
   }
-  // Reset or the next frame's background() behaves differently and smears.
-  drawingContext.globalCompositeOperation = 'source-over';
+}
+
+// Two or three soft blobs drifting inside, keeping well clear of the edge.
+// They stay in by distance, not by clipping: clipping to a hard outline would
+// give a crisp rim and fight the soft edge the whole piece is built on.
+function drawInnerColour(cx, cy, radius) {
+  const t = millis();
+  const reach = Math.max(0, radius * (1 - INNER_BLOB_MARGIN) - INNER_BLOB_SIZE);
+  for (let i = 0; i < INNER_BLOBS; i++) {
+    const a = (t / (INNER_FLOW_SPEED + i * 1400)) * TWO_PI + i * 2.1;
+    const bx = cx + Math.cos(a) * reach * 0.6;
+    const by = cy + Math.sin(a * 1.3) * reach * 0.6 * genome.stretch;
+    const hue = wrapHue(genome.hue + [-26, 18, 44][i % 3]);
+    for (let p = GLOW_PASSES - 1; p >= 0; p--) {
+      const u = p / (GLOW_PASSES - 1);
+      const r = INNER_BLOB_SIZE * (0.45 + 0.55 * (1 - u));
+      fill(color(hue, genome.sat, genome.bright + brightenNow(), INNER_BLOB_ALPHA * (0.3 + 0.7 * u)));
+      ellipse(bx, by, r * 2, r * 2 * genome.stretch);
+    }
+  }
+}
+
+// Faint concentric rings inside the body, like the last panel of the reference.
+function drawBanding(pts, cx, cy) {
+  const step = genome.bandGap / CREATURE_SIZE;
+  noFill();
+  strokeWeight(BAND_STROKE);
+  stroke(bodyColour(BAND_ALPHA));
+  for (let i = 1; i <= Math.round(genome.bandCount); i++) {
+    const scale = 1 - i * step;
+    if (scale < BAND_FLOOR) break;
+    traceSpline(pts, cx, cy, scale);
+  }
+  noStroke();
 }
 
 function breathScale(t) {
@@ -320,15 +459,97 @@ function breathScale(t) {
   return map(Math.sin(phase * TWO_PI), -1, 1, CREATURE_BLOOM_MIN, CREATURE_BLOOM_MAX);
 }
 
+function creatureCentre() {
+  const t = millis();
+  const cx = width / 2 + Math.sin((t / WANDER_PERIOD_X) * TWO_PI) * WANDER_RADIUS_X + bodyOffsetX;
+  const cy = constrain(
+    height * CREATURE_CENTRE_Y_FRAC + Math.sin((t / WANDER_PERIOD_Y) * TWO_PI) * WANDER_RADIUS_Y + bodyOffsetY,
+    height * WANDER_CEIL,
+    height * WANDER_FLOOR
+  );
+  return [cx, cy];
+}
+
+// ---- Reading a gesture ---------------------------------------------------
+
+function showGesture(label) {
+  gestureLabel = label;
+  gestureLabelUntil = millis() + 900;
+  debug('gesture: ' + label);
+}
+
+function classifyGesture(g) {
+  const held = millis() - g.start;
+  if (g.dragged) return 'drag';
+  if (held <= TAP_MAX_MS) return 'tap';
+  if (held >= PRESS_MIN_MS) return 'press';
+  return 'hold';
+}
+
+function finishGesture() {
+  if (!gesture) return;
+  const kind = classifyGesture(gesture);
+  showGesture(kind);
+  if (kind === 'tap') brightenAt = millis();
+  if (kind === 'press') {
+    const [cx, cy] = creatureCentre();
+    swellAngle = Math.atan2(mouseY - cy, mouseX - cx);
+    swellTarget = 1;
+  }
+  if (kind === 'drag') {
+    swellTarget = 0;
+    bodyOffsetX = 0;
+    bodyOffsetY = 0;
+  }
+  gesture = null;
+}
+
+// A touch the phone cancels never calls mouseReleased on p5 2.3.1 and later,
+// so a gesture would sit there as a permanent press. The watchdog clears it.
+// Timing rather than touches.length, so it behaves the same with a mouse.
+function expireGesture() {
+  if (gesture && millis() > gesture.deadline) {
+    gesture = null;
+    swellTarget = 0;
+  }
+}
+
+function easeSwell() {
+  const k = swellTarget > swellAmount ? SWELL_EASE_IN : SWELL_EASE_OUT;
+  swellAmount += (swellTarget - swellAmount) * k;
+  if (swellTarget === 0 && swellAmount < 0.002) swellAmount = 0;
+}
+
 // ---- Input ----------------------------------------------------------------
 // Declared as function declarations, so p5 finds them no matter where
 // lockGestures() snapshots its handlers. Never reassign window.mouseXxx —
-// that replaces p5-phone's own wrapper. There is only one mouseReleased():
-// later steps add gesture detection to it, not a second one.
+// that replaces p5-phone's own wrapper. There is only one mouseReleased().
+
+function mousePressed() {
+  gesture = {
+    start: millis(),
+    deadline: millis() + GESTURE_RESET_MS,
+    x: mouseX,
+    y: mouseY,
+    dragged: false,
+  };
+  return false;
+}
+
+function mouseDragged() {
+  if (!gesture) return false;
+  if (!gesture.dragged && dist(mouseX, mouseY, gesture.x, gesture.y) > TAP_MAX_MOVE_PX) {
+    gesture.dragged = true;
+    swellTarget = 0;
+  }
+  return false;
+}
 
 function mouseReleased() {
   keepAwake();
   playTone();
+  nudgeGenome(); // the only place the genome ever moves
+  finishGesture();
   return false;
 }
 
@@ -347,11 +568,28 @@ function setup() {
   setShakeThreshold(SHAKE_THRESHOLD);
   showDebug();
 
-  showReadout = new URLSearchParams(location.search).has('debug');
+  const params = new URLSearchParams(location.search);
+  showReadout = params.has('debug');
+
+  if (params.has('reset')) {
+    try {
+      localStorage.removeItem(GENOME_KEY);
+      debug('genome reset');
+    } catch (err) {
+      debugWarn('reset failed: ' + err.message);
+    }
+  }
 
   loadGenome();
-  applyUrlOverrides();
-  clampGenome();
+  applyUrlOverrides(params);
+  clampGenome(genomeTarget);
+  genome = { ...genomeTarget }; // arrive instantly, no settling on load
+
+  if (params.has('nudge')) {
+    const times = Math.max(0, Math.min(20000, Number(params.get('nudge')) || 0));
+    for (let i = 0; i < times; i++) nudgeGenome();
+    debug('fired ' + times + ' nudges');
+  }
 
   document.addEventListener('visibilitychange', onVisibilityChange);
 }
@@ -359,14 +597,43 @@ function setup() {
 function draw() {
   background(0, 0, 0);
 
-  const cx = width / 2;
-  const cy = height * CREATURE_CENTRE_Y_FRAC;
-  const radius = (CREATURE_SIZE / 2) * breathScale(millis());
+  easeGenome();
+  easeSwell();
+  expireGesture();
 
+  const [cx, cy] = creatureCentre();
+  const radius = (CREATURE_SIZE / 2) * breathScale(millis());
   const pts = buildOutline(cx, cy, radius);
+
+  // One composite mode for the whole body, reset before the next frame's
+  // background() or the screen smears instead of clearing.
+  drawingContext.globalCompositeOperation = 'lighter';
   drawBody(pts, cx, cy);
+  drawInnerColour(cx, cy, radius);
+  drawBanding(pts, cx, cy);
+  drawingContext.globalCompositeOperation = 'source-over';
 
   if (showReadout) drawReadout();
+}
+
+function drawReadout() {
+  push();
+  textSize(13);
+  textAlign(LEFT, TOP);
+  fill(0, 0, 100);
+  let y = 14;
+  text('sensors ' + (window.sensorsEnabled ? 'on' : 'OFF'), 14, y);
+  y += 16;
+  if (window.sensorsEnabled) {
+    text('tilt ' + nf(rotationX, 0, 1) + '  ' + nf(rotationY, 0, 1) + '  ' + nf(rotationZ, 0, 1), 14, y);
+    y += 16;
+    text('rest ' + nf(REST_TILT_X, 0, 1) + '  ' + nf(REST_TILT_Y, 0, 1) + '  ' + nf(REST_TILT_Z, 0, 1), 14, y);
+    y += 16;
+    text(millis() < shakeUntil ? 'SHAKEN' : 'shake -', 14, y);
+  }
+  y += 16;
+  text(millis() < gestureLabelUntil ? 'gesture: ' + gestureLabel : 'gesture: -', 14, y);
+  pop();
 }
 
 function windowResized() {
