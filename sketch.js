@@ -28,8 +28,12 @@ const REST_TILT_Z = 0;
 // Body
 const CREATURE_SIZE = 220; // diameter in pixels
 const CREATURE_CENTRE_Y_FRAC = 0.5; // fraction of canvas height, not pixels
-const GLOW_PASSES = 6;
-const GLOW_ALPHA = 0.16;
+// Additive passes stack toward white no matter how saturated each one is, so
+// fewer, stronger passes keep more colour than many weak ones. Measured on the
+// rendered creature, 6 passes at 0.2 read as pale khaki where 4 passes at 0.26
+// kept a visibly deeper body at the same luminance.
+const GLOW_PASSES = 4;
+const GLOW_ALPHA = 0.26;
 const CREATURE_BLOOM_MIN = 0.92;
 const CREATURE_BLOOM_MAX = 1.06;
 
@@ -52,10 +56,12 @@ const INNER_FLOW_SPEED = 9000; // ms for one loop
 const INNER_BLOB_SIZE = 26;
 const INNER_BLOB_ALPHA = 0.42;
 const INNER_BLOB_MARGIN = 0.35; // how far inside the edge their centres stay
-const INNER_COMPOSITE_ALPHA = 0.5; // how much of the mixed result lands
+const INNER_COMPOSITE_ALPHA = 0.72; // how much of the mixed result lands
 const INNER_MASK_ALPHA = 0.92; // keeps the colour inside the body, black outside
 const INNER_MASK_PASSES = 2; // destination-in multiplies alpha, so keep this low
-const INNER_BRIGHT_SCALE = 0.95; // multiply needs headroom to stay soft
+const INNER_BRIGHT_SCALE = 0.97; // multiply needs headroom to stay soft
+const GROUND_SAT = 0.7; // the buffer's ground carries the body's own colour
+const GROUND_BRIGHT = 1.0;
 
 // Three hues related to the creature's own: near it, across from it, between.
 const INNER_HUE_OFFSETS = [0, 148, 74];
@@ -74,11 +80,20 @@ const WANDER_PERIOD_Y = 23000; // ms
 const WANDER_CEIL = 0.24; // fraction of canvas height
 const WANDER_FLOOR = 0.76;
 
-// One touch means one tiny bounded change
-const NUDGE_SHAPE = 0.35;
-const NUDGE_COLOUR = 7;
-const NUDGE_MOVE = 180;
+// One touch means one tiny bounded change.
+//
+// These are sized as a FRACTION of each field's own range, not as absolute
+// numbers. The shape fields have ranges of 0.28 to 0.6, so the old absolute
+// nudge of 0.35 was moving formHi by 125% of everything it had in one touch,
+// and bandCount by 175%. Percentage-based nudges keep "a hair" meaning a hair
+// whatever a field's range happens to be.
+const NUDGE_SHAPE_PCT = 0.05; // 5% of range per touch
+const NUDGE_COLOUR_PCT = 0.06;
+const NUDGE_MOVE_PCT = 0.05;
+const NUDGE_SECONDARY = 0.4; // the second field moves less than the first
 const NUDGE_SHAPE_CHANCE = 0.5; // chance a touch moves shape rather than colour
+const NUDGE_MOVE_CHANCE = 0.15; // and this share of those moves breath instead
+const NUDGE_COLOUR_CHANCE = 0.5; // rest of the time: colour, or the body's surface
 const NUDGE_EASE_IN = 0.05; // per 60fps frame, how fast the body catches up
 const TEST_NUDGE_COUNT = 200;
 
@@ -140,10 +155,15 @@ const STRETCH_MIN = 0.72;
 const STRETCH_MAX = 1.45;
 const HUE_MIN = 0;
 const HUE_MAX = 360;
-const SAT_MIN = 35;
-const SAT_MAX = 78;
-const BRIGHT_MIN = 62;
-const BRIGHT_MAX = 96;
+// Saturation is the lever that actually reads as vibrancy. Measured on the
+// rendered creature, moving sat 55 to 78 lifted colour saturation from 0.32 to
+// 0.48, while moving brightness 82 to 96 barely changed luminance at all (163
+// to 166) because the layered additive passes were already near their ceiling.
+// So the range sits high, and GLOW_ALPHA carries the rest of the brightness.
+const SAT_MIN = 62;
+const SAT_MAX = 98;
+const BRIGHT_MIN = 72;
+const BRIGHT_MAX = 98;
 const BAND_COUNT_MIN = 2;
 const BAND_COUNT_MAX = 6;
 const BAND_GAP_MIN = 8;
@@ -163,9 +183,12 @@ const GENOME_DEFAULT = {
   phaseMid: 2.1,
   phaseHi: 4.0,
   stretch: 1,
-  hue: 40,
-  sat: 55,
-  bright: 82,
+  // hue 38 measured as the best trade on the rendered creature: same
+  // luminance as the yellow-leaning defaults but 2.6x the spread between the
+  // red and green channels, so it reads as a colour rather than pale khaki.
+  hue: 38,
+  sat: 95,
+  bright: 90,
   bandCount: 3,
   bandGap: 18,
   edgeBlur: 12,
@@ -209,9 +232,16 @@ const GENOME_RANGES = {
   breathPeriod: [BREATH_PERIOD_MIN, BREATH_PERIOD_MAX],
 };
 
+// Which fields a touch is allowed to move, grouped by what it changes.
+// Every genome field must appear in exactly one group, or it can never change.
 const SHAPE_FIELDS = ['formLo', 'formMid', 'formHi', 'stretch', 'phaseLo', 'phaseMid', 'phaseHi'];
 const COLOUR_FIELDS = ['hue', 'sat', 'bright'];
 const MOVE_FIELDS = ['breathPeriod'];
+// Banding and edge softness change the body's surface, so they ride along with
+// colour: whichever way a visitor pushes the colour, the surface follows.
+const SURFACE_FIELDS = ['bandCount', 'bandGap', 'edgeBlur'];
+
+const NUDGE_GROUPS = [SHAPE_FIELDS, COLOUR_FIELDS, MOVE_FIELDS, SURFACE_FIELDS];
 
 // genomeTarget is what a touch moves, what is pinned, and what is saved.
 // genome is what gets drawn, easing toward the target so nothing ever snaps.
@@ -414,25 +444,31 @@ function applyUrlOverrides(params) {
 function nudgeGenome(weight = 1) {
   const roll = random();
   if (roll < NUDGE_SHAPE_CHANCE) {
-    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE * weight);
-    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE * 0.4 * weight);
-  } else if (roll < NUDGE_SHAPE_CHANCE + 0.15) {
-    nudgeOne(pick(MOVE_FIELDS), NUDGE_MOVE * weight);
+    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE_PCT * weight);
+    nudgeOne(pick(SHAPE_FIELDS), NUDGE_SHAPE_PCT * NUDGE_SECONDARY * weight);
+  } else if (roll < NUDGE_SHAPE_CHANCE + NUDGE_MOVE_CHANCE) {
+    nudgeOne(pick(MOVE_FIELDS), NUDGE_MOVE_PCT * weight);
   } else {
-    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR * weight);
-    nudgeOne(pick(COLOUR_FIELDS), NUDGE_COLOUR * 0.5 * weight);
+    // Colour or surface, chosen together - a touch moves the colour half the
+    // time and the surface the other half.
+    const group = random() < NUDGE_COLOUR_CHANCE ? COLOUR_FIELDS : SURFACE_FIELDS;
+    nudgeOne(pick(group), NUDGE_COLOUR_PCT * weight);
+    nudgeOne(pick(group), NUDGE_COLOUR_PCT * NUDGE_SECONDARY * weight);
   }
   clampGenome(genomeTarget);
   saveGenome();
 }
 
+// amount is a fraction of the field's range, so one nudge always reads as the
+// same small step no matter how wide or narrow that field is.
 function nudgeOne(field, amount) {
   const [lo, hi] = GENOME_RANGES[field];
+  const span = (hi - lo) * amount;
   if (field === 'hue') {
     // hue is a circle, so it wraps past 360 instead of sticking at the end
-    genomeTarget.hue = wrapHue(genomeTarget.hue + random(-amount, amount));
+    genomeTarget.hue = wrapHue(genomeTarget.hue + random(-span, span));
   } else {
-    genomeTarget[field] = constrain(genomeTarget[field] + random(-amount, amount), lo, hi);
+    genomeTarget[field] = constrain(genomeTarget[field] + random(-span, span), lo, hi);
   }
 }
 
@@ -588,9 +624,14 @@ function drawInnerColour(pts, cx, cy, radius) {
   buf.clear();
   buf.blendMode(BLEND);
 
-  // A near-white ground, so multiply has something to mix into.
+  // The ground must be a TINT, not white. This buffer is composited across the
+  // whole body, so wherever the blobs are NOT overlapping, whatever is on the
+  // ground is what gets added on top. A white ground added white everywhere and
+  // washed the colour out of the entire creature; tinting it with the creature's
+  // own hue means unmixed areas keep the body's colour and only the overlaps
+  // shift, which is what makes the mixing readable.
   buf.push();
-  buf.fill(255);
+  buf.fill(color(genome.hue, genome.sat * GROUND_SAT, constrain(genome.bright + brightenNow(), 0, 100) * GROUND_BRIGHT));
   buf.rect(0, 0, width, height);
   buf.blendMode(MULTIPLY);
 

@@ -21,6 +21,66 @@ and the touch pipeline do.
   screen. It is now off unless the address carries `?debug=1`. If the Android problem
   was partly "a grey bar across the top of the screen", that is fixed.
 
+## Step 21 done: the nudge was not actually a nudge
+
+Two bugs found by measuring rather than assuming. Both were invisible by eye.
+
+**1. Nudges were absolute numbers, so "a hair" stopped meaning a hair.** `NUDGE_SHAPE`
+of 0.35 was sized when the shape field was `lobes`, whose range is 5 — so 0.35 was 7% of
+it. The harmonic fields replaced that and their ranges are **0.28 to 0.6**. The same
+number was moving `formHi` by **125% of its entire range** per touch and `bandCount` by
+175%. One touch slammed those to a wall, which is the opposite of small slow evolution.
+
+Every genome field now nudges by a **percentage of its own range** (`NUDGE_SHAPE_PCT` and
+friends, ~5%). Measured after 300 nudges: every field drifts 1–27% of its range, and the
+outline radius stays between 0.745 and 1.268, so it never folds through itself.
+
+**2. Three genome fields were dead.** `bandCount`, `bandGap` and `edgeBlur` were in the
+genome, saved and loaded, but in **no nudge group** — so no touch could ever change them.
+They now share a `SURFACE_FIELDS` group, moved on the same roll as colour, so whichever way
+a visitor pushes the colour the body's surface follows. Verified: no orphaned fields, no
+duplicates, and after 300 nudges every one of the 14 fields has moved.
+
+Both were found by asking what a single touch actually did, field by field, as a fraction
+of that field's range. Worth keeping as a habit — it is the only reason these showed up.
+
+## Brightness and vibrancy
+
+Measured on the rendered creature throughout, not by eye. Three findings:
+
+1. **Saturation is the lever, not brightness.** Moving sat 55 to 78 took rendered
+   saturation 0.32 to 0.48, while moving brightness 82 to 96 changed luminance by 3 points
+   out of 163 — the layered additive passes were already near their ceiling.
+2. **Fewer, stronger glow passes.** 6 passes at alpha 0.2 read as pale khaki; 4 passes at
+   0.26 kept a deeper body at the same luminance. Additive passes stack toward white
+   however saturated each one is.
+3. **The buffer's white ground was washing out the whole creature.** The interior buffer
+   composites across the entire body, so wherever the blobs are not overlapping, the
+   ground is what gets added. It was pure white, so white was being added everywhere.
+   Tinting the ground with the creature's own hue took rendered saturation from **0.55 to
+   0.83** — by far the biggest single change — and the body now reads as amber
+   `[223, 164, 43]` rather than tan.
+
+Final measured state: luminance 165 (from 163), saturation **0.83** (from 0.32), RGB
+channel spread 63 (from 14), nothing blown out, 30fps.
+
+## Still to do
+
+**Step 21's own work — feel.** The numbers are now sanely scaled, but the *feel* still
+wants eyes on it, ideally on the phone:
+
+- `CREATURE_SIZE` (220) — is it big enough to read from across a room?
+- `GLOW_ALPHA` (0.16) and `GLOW_PASSES` (6) — how luminous.
+- `INNER_COMPOSITE_ALPHA` (0.5) — how strongly the mixed interior colour reads.
+- `BREATH_PERIOD` range (4200–9000ms) — how fast it breathes.
+- `TAP_MAX_MS` (260) / `PRESS_MIN_MS` (420) — how forgiving the gesture vocabulary is.
+
+**Unresolved: the Android phone.** Everything has been verified in a desktop browser —
+touch pipeline, persistence, rendering, frame rate — and all of it works. Nothing here
+reproduces an Android-only failure, so the cause is still unknown. If it still misbehaves,
+tell me which it is: black screen, dimmed screen with an icon stuck on it, or an error
+message.
+
 ## Rebuilt: organic form and real colour mixing
 
 ### Form: no more lobe count
