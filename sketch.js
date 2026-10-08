@@ -34,15 +34,32 @@ const CREATURE_BLOOM_MIN = 0.92;
 const CREATURE_BLOOM_MAX = 1.06;
 
 // Silhouette
-const SILHOUETTE_SAMPLES = 72;
-const LOBE_DEPTH = 0.28; // fixed look, not a genome value
+// Control points around the loop, and curve samples between each pair. Needs to
+// be generous: at 7 lobes, 48 control points left only about 7 per lobe and the
+// curve visibly faceted at each crest. 96 keeps the crests round for a few
+// hundred vertices a frame, which is cheap.
+const SILHOUETTE_SAMPLES = 96;
+const OUTLINE_SAMPLES_PER_SEGMENT = 4;
+const NOISE_DEPTH = 0.09; // fixed asymmetry, not a genome value
+const NOISE_ORBIT_RADIUS = 0.35; // keep the noise term broad, not bumpy
 
-// Colour drifting inside the body
-const INNER_BLOBS = 3;
+// Colour drifting inside the body, mixed on a buffer under MULTIPLY so the
+// colours combine subtractively and overlaps make a real third colour instead
+// of stacking to white. See drawInnerColour.
+const INNER_BLOBS = 4;
+const INNER_BLOB_PASSES = 4;
 const INNER_FLOW_SPEED = 9000; // ms for one loop
 const INNER_BLOB_SIZE = 26;
-const INNER_BLOB_ALPHA = 0.1;
+const INNER_BLOB_ALPHA = 0.42;
 const INNER_BLOB_MARGIN = 0.35; // how far inside the edge their centres stay
+const INNER_COMPOSITE_ALPHA = 0.5; // how much of the mixed result lands
+const INNER_MASK_ALPHA = 0.92; // keeps the colour inside the body, black outside
+const INNER_MASK_PASSES = 2; // destination-in multiplies alpha, so keep this low
+const INNER_BRIGHT_SCALE = 0.95; // multiply needs headroom to stay soft
+
+// Three hues related to the creature's own: near it, across from it, between.
+const INNER_HUE_OFFSETS = [0, 148, 74];
+const INNER_SAT_RANGE = [1, 0.85, 0.6, 0.75];
 
 // Banding
 const BAND_STROKE = 1.6;
@@ -98,8 +115,27 @@ const SWELL_EASE_IN = 0.18;
 const SWELL_EASE_OUT = 0.07;
 
 // Genome ranges
-const LOBES_MIN = 2;
-const LOBES_MAX = 7;
+//
+// The shape is three harmonics whose FREQUENCIES are fixed whole numbers (so the
+// outline closes by construction) and whose AMPLITUDES are continuous (so the
+// creature is not stuck in a handful of shapes). Phase is continuous too, and
+// safe to drift, because cos(angle * n + phase) is periodic for any phase.
+const HARMONIC_FREQ = [2, 3, 5];
+const FORM_LO_MIN = -0.3;
+const FORM_LO_MAX = 0.3;
+const FORM_MID_MIN = -0.24;
+const FORM_MID_MAX = 0.24;
+const FORM_HI_MIN = -0.14;
+const FORM_HI_MAX = 0.14;
+// 2*PI, written out because p5's TWO_PI is not defined at load time.
+const TAU = 6.283185307179586;
+const PHASE_LO_MIN = 0;
+const PHASE_LO_MAX = TAU;
+const PHASE_MID_MIN = 0;
+const PHASE_MID_MAX = TAU;
+const PHASE_HI_MIN = 0;
+const PHASE_HI_MAX = TAU;
+
 const STRETCH_MIN = 0.72;
 const STRETCH_MAX = 1.45;
 const HUE_MIN = 0;
@@ -120,7 +156,12 @@ const BREATH_PERIOD_MAX = 9000;
 const GENOME_KEY = 'the-creature-genome';
 const GENOME_SAVE_DELAY_MS = 400;
 const GENOME_DEFAULT = {
-  lobes: 3,
+  formLo: 0.16,
+  formMid: 0.1,
+  formHi: 0.05,
+  phaseLo: 0.7,
+  phaseMid: 2.1,
+  phaseHi: 4.0,
   stretch: 1,
   hue: 40,
   sat: 55,
@@ -135,7 +176,12 @@ const GENOME_DEFAULT = {
 
 // The whole genome, declared up front. No later step adds a field.
 const GENOME_FIELDS = [
-  'lobes',
+  'formLo',
+  'formMid',
+  'formHi',
+  'phaseLo',
+  'phaseMid',
+  'phaseHi',
   'stretch',
   'hue',
   'sat',
@@ -147,7 +193,12 @@ const GENOME_FIELDS = [
 ];
 
 const GENOME_RANGES = {
-  lobes: [LOBES_MIN, LOBES_MAX],
+  formLo: [FORM_LO_MIN, FORM_LO_MAX],
+  formMid: [FORM_MID_MIN, FORM_MID_MAX],
+  formHi: [FORM_HI_MIN, FORM_HI_MAX],
+  phaseLo: [PHASE_LO_MIN, PHASE_LO_MAX],
+  phaseMid: [PHASE_MID_MIN, PHASE_MID_MAX],
+  phaseHi: [PHASE_HI_MIN, PHASE_HI_MAX],
   stretch: [STRETCH_MIN, STRETCH_MAX],
   hue: [HUE_MIN, HUE_MAX],
   sat: [SAT_MIN, SAT_MAX],
@@ -158,7 +209,7 @@ const GENOME_RANGES = {
   breathPeriod: [BREATH_PERIOD_MIN, BREATH_PERIOD_MAX],
 };
 
-const SHAPE_FIELDS = ['lobes', 'stretch'];
+const SHAPE_FIELDS = ['formLo', 'formMid', 'formHi', 'stretch', 'phaseLo', 'phaseMid', 'phaseHi'];
 const COLOUR_FIELDS = ['hue', 'sat', 'bright'];
 const MOVE_FIELDS = ['breathPeriod'];
 
@@ -196,6 +247,8 @@ let dragVelX = 0;
 let dragVelY = 0;
 let lastPointerX = 0;
 let lastPointerY = 0;
+
+let colourBuf = null;
 
 // Every touch sends out one ring.
 let rippleAt = -1e9;
@@ -338,7 +391,7 @@ function saveGenome() {
 
 // Any genome field can be pinned from the address, so both ends of every range
 // can be looked at without waiting days for one to drift there:
-//   ?lobes=2&stretch=1.4&hue=210&edgeBlur=4
+//   ?formLo=0.25&formMid=-0.1&hue=210&edgeBlur=4
 function applyUrlOverrides(params) {
   let pinned = false;
   for (const field of GENOME_FIELDS) {
@@ -415,13 +468,27 @@ function bodyColour(alpha) {
 }
 
 // Smooth and stable: the same genome always produces the same creature.
-// The bump term is driven by lobe count directly, so genome.lobes really is
-// the number of bumps. The noise term only breaks the symmetry a little.
+//
+// That noise term samples a circle of NOISE_ORBIT_RADIUS around a centre in
+// noise space, so as the angle goes round, it walks that circle. At radius 1.3
+// the loop was crossing eight or more Perlin cells, and the outline was
+// stepping across them unevenly - that is what put a notch in one place. A
+// small radius means one broad swell instead of a row of bumps.
+// The outline is a sum of three harmonics. Their frequencies are fixed whole
+// numbers, which is what makes the loop close; their amplitudes and phases come
+// from the genome and are continuous, which is what stops the creature from
+// living in a handful of shapes.
+//
+// Frequency 1 is deliberately absent: it fights the stretch term and doubles up
+// with the noise term below.
 function outlineVariation(angle) {
-  const lobes = Math.max(1, genome.lobes);
-  const bump = Math.cos(angle * lobes);
-  const organic = noise(Math.cos(angle) * 1.3 + 20, Math.sin(angle) * 1.3 + 20) - 0.5;
-  return 1 + LOBE_DEPTH * (bump * 0.7 + organic * 0.6);
+  let harmonics =
+    genome.formLo * Math.cos(angle * HARMONIC_FREQ[0] + genome.phaseLo) +
+    genome.formMid * Math.cos(angle * HARMONIC_FREQ[1] + genome.phaseMid) +
+    genome.formHi * Math.cos(angle * HARMONIC_FREQ[2] + genome.phaseHi);
+  const organic =
+    noise(Math.cos(angle) * NOISE_ORBIT_RADIUS + 20, Math.sin(angle) * NOISE_ORBIT_RADIUS + 20) - 0.5;
+  return 1 + harmonics + organic * NOISE_DEPTH;
 }
 
 // A soft press leaves a bulge under the finger. Nothing here touches the
@@ -439,25 +506,52 @@ function wrapRadians(d) {
   return v - PI;
 }
 
+// p5's splineVertex + endShape(CLOSE) does not close a curve cleanly. Measured
+// on a plain circle it leaves the seam about a pixel inside the rest of the
+// outline, which on a soft glow reads as a flat spot. So the closure is done
+// here instead: a periodic Catmull-Rom evaluated over wrapped indices, then
+// sampled densely. p5 only ever sees vertex() calls, and CLOSE joins two points
+// that are already on top of each other, so its chord is invisible.
+function closedSpline(control, samplesPerSegment) {
+  const n = control.length;
+  const out = [];
+  const at = (i) => control[((i % n) + n) % n];
+  for (let i = 0; i < n; i++) {
+    const p0 = at(i - 1);
+    const p1 = at(i);
+    const p2 = at(i + 1);
+    const p3 = at(i + 2);
+    for (let s = 0; s < samplesPerSegment; s++) {
+      const t = s / samplesPerSegment;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      out.push([
+        0.5 * (2 * p1[0] + (p2[0] - p0[0]) * t +
+          (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+          (3 * p1[0] - p0[0] - 3 * p2[0] + p3[0]) * t3),
+        0.5 * (2 * p1[1] + (p2[1] - p0[1]) * t +
+          (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+          (3 * p1[1] - p0[1] - 3 * p2[1] + p3[1]) * t3),
+      ]);
+    }
+  }
+  return out;
+}
+
 function buildOutline(cx, cy, radius) {
-  const pts = [];
+  const control = [];
   for (let i = 0; i < SILHOUETTE_SAMPLES; i++) {
     const a = (i / SILHOUETTE_SAMPLES) * TWO_PI;
     const r = radius * outlineVariation(a) + swellOffset(a, radius);
-    pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r * genome.stretch]);
+    control.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r * genome.stretch]);
   }
-  return pts;
+  return closedSpline(control, OUTLINE_SAMPLES_PER_SEGMENT);
 }
 
-// Feed every outline point exactly once and let endShape(CLOSE) join them.
-// Repeating the first point at the end does NOT close a p5 spline smoothly:
-// it gives Catmull-Rom two identical neighbours, which collapses the tangent
-// there and leaves a visible corner. Wrapping the ends the other way is worse
-// again - CLOSE then draws a straight chord across the body.
 function traceSpline(pts, cx, cy, scale) {
   beginShape();
   for (const p of pts) {
-    splineVertex(cx + (p[0] - cx) * scale, cy + (p[1] - cy) * scale);
+    vertex(cx + (p[0] - cx) * scale, cy + (p[1] - cy) * scale);
   }
   endShape(CLOSE);
 }
@@ -476,24 +570,97 @@ function drawBody(pts, cx, cy) {
   }
 }
 
-// Two or three soft blobs drifting inside, keeping well clear of the edge.
-// They stay in by distance, not by clipping: clipping to a hard outline would
-// give a crisp rim and fight the soft edge the whole piece is built on.
-function drawInnerColour(cx, cy, radius) {
+// The colour inside the body is mixed SUBTRACTIVELY on a buffer, then the
+// finished result is added back onto the main canvas.
+//
+// Everything drawn straight onto the main canvas uses 'lighter', and additive
+// light can only add: two overlapping colours go brighter and drift toward
+// white, and they can never make a third colour. That is why three inner blobs
+// used to stack into a white disc in the middle. Drawing them onto a separate
+// buffer under 'multiply' mixes them the way pigment does - blue over yellow
+// really does go green - and only the already-mixed result is added back, so the
+// body keeps its glow without losing its colour.
+//
+// They stay inside the body by distance, not by clipping: clipping to a hard
+// outline would give a crisp rim and fight the soft edge the piece is built on.
+function drawInnerColour(pts, cx, cy, radius) {
+  const buf = colourBuffer();
+  buf.clear();
+  buf.blendMode(BLEND);
+
+  // A near-white ground, so multiply has something to mix into.
+  buf.push();
+  buf.fill(255);
+  buf.rect(0, 0, width, height);
+  buf.blendMode(MULTIPLY);
+
   const t = millis();
   const reach = Math.max(0, radius * (1 - INNER_BLOB_MARGIN) - INNER_BLOB_SIZE);
   for (let i = 0; i < INNER_BLOBS; i++) {
     const a = (t / (INNER_FLOW_SPEED + i * 1400)) * TWO_PI + i * 2.1;
     const bx = cx + Math.cos(a) * reach * 0.6;
     const by = cy + Math.sin(a * 1.3) * reach * 0.6 * genome.stretch;
-    const blobHue = wrapHue(genome.hue + [-26, 18, 44][i % 3]);
-    for (let p = GLOW_PASSES - 1; p >= 0; p--) {
-      const u = p / (GLOW_PASSES - 1);
+    const hue = innerHue(i);
+    const sat = genome.sat * INNER_SAT_RANGE[i % INNER_SAT_RANGE.length];
+    const bright = constrain(genome.bright + brightenNow(), 0, 100) * INNER_BRIGHT_SCALE;
+    for (let p = INNER_BLOB_PASSES - 1; p >= 0; p--) {
+      const u = p / (INNER_BLOB_PASSES - 1);
       const r = INNER_BLOB_SIZE * (0.45 + 0.55 * (1 - u));
-      fill(color(blobHue, genome.sat, genome.bright + brightenNow(), INNER_BLOB_ALPHA * (0.3 + 0.7 * u)));
-      ellipse(bx, by, r * 2, r * 2 * genome.stretch);
+      buf.fill(color(hue, sat, bright, INNER_BLOB_ALPHA * (0.35 + 0.65 * u)));
+      buf.ellipse(bx, by, r * 2, r * 2 * genome.stretch);
     }
   }
+  buf.pop();
+
+  // Cut the mixed colour back to only where the body actually is. Without this
+  // the buffer's white ground lifts the whole black background to dark grey,
+  // which changes the piece's ground from black to charcoal. Cutting on alpha
+  // keeps the colour inside the creature and leaves true black outside it.
+  // DESTINATION_IN has no p5 constant, so set the Canvas2D value directly.
+  buf.drawingContext.globalCompositeOperation = 'destination-in';
+  buf.push();
+  buf.noStroke();
+  // destination-in MULTIPLIES alpha, so it compounds: six passes at 0.5 erase
+  // everything. Two passes at high alpha give a soft edge that survives.
+  for (let p = INNER_MASK_PASSES - 1; p >= 0; p--) {
+    const u = p / (INNER_MASK_PASSES - 1);
+    buf.fill(color(genome.hue, 0, 100, INNER_MASK_ALPHA * (0.82 + 0.18 * u)));
+    traceSplineOnBuffer(buf, pts, cx, cy, 1 + (genome.edgeBlur / 100) * (1 - u) * 0.6);
+  }
+  buf.pop();
+  buf.blendMode(BLEND);
+  buf.drawingContext.globalCompositeOperation = 'source-over';
+
+  drawingContext.globalCompositeOperation = 'lighter';
+  drawingContext.globalAlpha = INNER_COMPOSITE_ALPHA;
+  drawingContext.drawImage(buf.canvas, 0, 0, width, height);
+  drawingContext.globalAlpha = 1;
+}
+
+function traceSplineOnBuffer(buf, pts, cx, cy, scale) {
+  buf.beginShape();
+  for (const p of pts) {
+    buf.vertex(cx + (p[0] - cx) * scale, cy + (p[1] - cy) * scale);
+  }
+  buf.endShape(buf.CLOSE);
+}
+
+function colourBuffer() {
+  if (!colourBuf || colourBuf.width !== width || colourBuf.height !== height) {
+    if (colourBuf) colourBuf.remove();
+    colourBuf = createGraphics(width, height);
+    colourBuf.pixelDensity(1);
+    colourBuf.noStroke();
+  }
+  return colourBuf;
+}
+
+// The palette follows the creature's own hue rather than being fixed, so it
+// shifts as the creature drifts: one hue near the body, one across the wheel
+// from it, one between. All stay desaturated and bright, so the creature keeps
+// the soft register the reference has whatever hue it happens to be sitting at.
+function innerHue(i) {
+  return wrapHue(genome.hue + INNER_HUE_OFFSETS[i % INNER_HUE_OFFSETS.length]);
 }
 
 // Faint concentric rings inside the body, like the last panel of the reference.
@@ -727,9 +894,9 @@ function draw() {
 
   // One composite mode for the whole body, reset before the next frame's
   // background() or the screen smears instead of clearing.
-  drawingContext.globalCompositeOperation = 'lighter';
   drawBody(pts, cx, cy);
-  drawInnerColour(cx, cy, radius);
+  drawInnerColour(pts, cx, cy, radius);
+  drawingContext.globalCompositeOperation = 'lighter';
   drawBanding(pts, cx, cy);
   drawRipple(radius);
   drawingContext.globalCompositeOperation = 'source-over';

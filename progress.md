@@ -21,15 +21,78 @@ and the touch pipeline do.
   screen. It is now off unless the address carries `?debug=1`. If the Android problem
   was partly "a grey bar across the top of the screen", that is fixed.
 
-## Fixed: the seam was a sharp corner
+## Rebuilt: organic form and real colour mixing
 
-`traceSpline()` repeated the first outline point at the end. In p5 that does **not**
-close a spline smoothly — it gives Catmull-Rom two identical neighbours, which collapses
-the tangent at the seam and puts a visible corner on the soft body. Wrapping the ends
-the other way is worse: `endShape(CLOSE)` then draws a straight chord across the shape.
+### Form: no more lobe count
 
-Verified by rendering the real outline both ways. Feed every point exactly once and
-`endShape(CLOSE)` closes it cleanly. Fixed in `sketch.js` and in Step 9 of `plan.md`.
+`lobes` is gone. The outline is now a sum of three harmonics with **fixed whole-number
+frequencies (2, 3, 5) and continuous amplitudes**:
+
+    radius(angle) = formLo  * cos(angle*2 + phaseLo)
+                  + formMid * cos(angle*3 + phaseMid)
+                  + formHi  * cos(angle*5 + phaseHi)
+                  + noise asymmetry
+
+The frequencies stay integral so the loop closes by construction; the amplitudes and phases
+drift freely, so the shape is not a handful of presets. Frequency 1 is deliberately absent —
+it fights `stretch` and doubles up with the noise term. Phase is safe to drift because
+`cos(angle*n + phase)` is periodic for any phase.
+
+This replaces the genome's single `lobes` field with **six** continuous fields
+(`formLo/Mid/Hi`, `phaseLo/Mid/Hi`), so the genome is now 14 fields. Verified across 40
+randomised genomes: seam asymmetry under 0.09, frame rate held at 30. Rendered four
+setups — near-circle, two broad lobes, three uneven, mixed five with stretch — all four
+distinct and closing cleanly.
+
+### Colour: mixed subtractively on a buffer
+
+The white disc in the middle is gone. The inner blobs are now drawn onto a
+`createGraphics()` buffer under `MULTIPLY` over a near-white ground, and only the finished
+mixed result is composited back additively. Overlaps now make real third colours instead
+of stacking to white.
+
+Two traps, both found by running it:
+- **`DESTINATION_IN` has no p5 constant.** `buf.blendMode(DESTINATION_IN)` throws every
+  frame. Set `buf.drawingContext.globalCompositeOperation` directly.
+- **`destination-in` multiplies alpha, so passes compound.** Masking with six passes at
+  0.5 erased the colour entirely (0.5^6). Two passes at 0.92 gives a soft edge that
+  survives. Without any mask, the buffer's white ground lifts the whole black background
+  to charcoal.
+
+Palette now derives from the creature's own hue: one hue near the body, one across the
+wheel, one between, all desaturated and bright. Verified at hue 30, 150 and 270 — the
+whole creature shifts colour together, each keeping darker mixed regions inside.
+
+## Earlier: the seam had a notch in it
+
+Two separate bugs, both real, both now measured rather than guessed.
+
+**1. `traceSpline()` repeated the first outline point.** In p5 that does not close a
+spline smoothly — it gives Catmull-Rom two identical neighbours, collapsing the tangent
+at the seam. Wrapping the ends the other way is worse: `endShape(CLOSE)` draws a straight
+chord across the shape. Verified by rendering.
+
+**2. The lobe count was fractional, and that was the actual notch.** This was the one
+that survived the first fix. `outlineVariation()` computes `cos(angle * lobes)`, and that
+term only returns to its starting value after a full turn when `lobes` is a whole number.
+`lobes` is a genome value nudged continuously, so it is fractional nearly all the time —
+the live value was **2.4569**, where the first sample of the loop evaluates the term at
+1.0 and the last sample at **-0.96**. One step, one notch, and it moved as the creature
+drifted, which is why it looked like a seam problem that would not go away.
+
+Measured before and after rounding: seam asymmetry went from **2.21** to **0.0001**.
+
+**3. The crests faceted at high lobe counts.** At 7 lobes, 48 control points left only
+about 7 per lobe and the turn between neighbouring points hit 23°. `SILHOUETTE_SAMPLES` is
+now 96 with 4 samples per segment — 11° at 7 lobes, a few hundred vertices a frame, and
+the frame rate held at 30.
+
+Also reduced `NOISE_ORBIT_RADIUS` from 1.3 to 0.35. At 1.3 the loop walked across eight
+or more Perlin cells, which made the outline step across them unevenly — a second, smaller
+source of unevenness.
+
+Verified by sweeping lobe counts 2 to 7 and rendering the worst case (7 lobes, sharpest
+edge, tightest banding): seven evenly spaced rounded points, no notch.
 
 ## Fixed: two console complaints
 

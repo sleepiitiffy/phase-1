@@ -120,13 +120,18 @@ The fields are: lobes, stretch, hue, sat, bright, bandCount, bandGap, edgeBlur, 
 - Phone: change something, switch to another app, come back — still changed. Put it in airplane mode and reload — still changed.
 
 ### Step 9 — The silhouette drifts
-Make the outline a closed loop built from a number of lobes of differing size, so it has bumps and legs rather than being a circle. Add a stretch so it can be tall and thin or round and heavy.
+Build the outline from **integer harmonics with continuous amplitudes**, so the shape space is effectively unlimited and the loop closes by construction.
 
-- Functions: `beginShape()` / `splineVertex()` / `endShape(CLOSE)`. The p5.js 2 rename matters here: `curveVertex()` is now `splineVertex()`.
-- **Feed every outline point exactly once** and let `endShape(CLOSE)` join them. Do not repeat the first point at the end, and do not wrap the ends the other way. Verified in a browser against p5 2.3.2: a repeated first point gives Catmull-Rom two identical neighbours, which collapses the tangent at the seam and leaves a visible corner on the soft body; wrapping the ends instead makes `CLOSE` draw a straight chord across the body. p5 closes a spline correctly on its own.
-- Numbers: `LOBES_MIN`, `LOBES_MAX`, `STRETCH_MIN`, `STRETCH_MAX`.
-- Laptop: open `?lobes=2` and then `?lobes=7` and the outline should have a clearly different number of bumps. The same address without the parameter must not write anything back.
-- Phone: open `?lobes=5&stretch=1.4`, check the shape, then open the plain address and confirm the creature is still the one that was saved, not the pinned one.
+- Functions: `beginShape()` / `vertex()` / `endShape(CLOSE)`, plus a periodic Catmull-Rom evaluated over modulo-wrapped indices. **Do not use `splineVertex()` for the body outline.**
+- **Never build the outline from a lobe count.** `cos(angle * lobes)` only returns to its starting value after a full turn when `lobes` is a whole number, which is exactly why integers gave a handful of fixed shapes — and why nudging `lobes` put a notch in the seam whenever it landed on a fraction. Instead sum a few harmonics whose **frequencies are fixed whole numbers** and whose **amplitudes drift continuously**:
+  `radius(angle) = sum over n of amplitude[n] * cos(angle * n + phase[n])`
+  The frequencies stay integral, so the loop closes; the amplitudes move freely, so the shape does not live in a small set. Never use frequency 1 — it fights `stretch` and doubles up with the noise term. Frequencies 2, 3 and 5 are enough. Phase is safe to drift, since `cos(angle * n + phase)` is periodic for any phase; just avoid phases that are multiples of the frequency, which do nothing.
+- **Close the curve by hand.** Two things had to be true, and fixing only one still leaves a notch:
+  1. **The shape function must be periodic** (above). With integer frequencies this is automatic; it is the single most important property.
+  2. **Do not close with p5's spline.** Measured on a plain circle, `splineVertex` + `endShape(CLOSE)` leaves the seam about a pixel inside the rest of the outline. Evaluate your own Catmull-Rom with modulo-wrapped indices and hand p5 dense `vertex()` calls, so `CLOSE` joins two points already on top of each other. Sample densely enough that the highest harmonic stays smooth — 96 control points with 4 samples per segment, which held 30fps and kept crest-to-crest turn down to about 11°.
+- Numbers: `FORM_LO_MIN/MAX`, `FORM_MID_MIN/MAX`, `FORM_HI_MIN/MAX` (the amplitudes for frequencies 2, 3 and 5), `PHASE_LO/MID/HI`, `STRETCH_MIN`, `STRETCH_MAX`, `SILHOUETTE_SAMPLES`, `OUTLINE_SAMPLES_PER_SEGMENT`, `NOISE_ORBIT_RADIUS`.
+- Laptop: open `?formLo=0.5&formMid=0&formHi=0` and then `?formLo=0&formMid=0.5&formHi=0` — two clearly different outlines from the same code, with no notch anywhere. The same address without the parameter must not write anything back.
+- Phone: open `?formLo=0.4&formMid=0.3&formHi=0.2&stretch=1.4`, check the shape, then open the plain address and confirm the creature is still the one that was saved, not the pinned one.
 
 ### Step 10 — Colour drifts
 Give the creature a hue, a saturation and a brightness, each with its own range, and let the hue travel all the way around the colour wheel. Keep the palette soft — low-to-mid saturation, high brightness, nothing neon and nothing brown.
@@ -137,11 +142,14 @@ Give the creature a hue, a saturation and a brightness, each with its own range,
 - Phone: same, with `?hue=40&sat=60&bright=85`.
 
 ### Step 11 — Colour flows inside the body
-Put two or three soft blobs of colour inside the creature that drift slowly around inside it on their own, between touches. Leave the page alone and confirm they never leave the body.
+Put a few soft blobs of colour inside the creature that drift slowly around inside it on their own, between touches. Leave the page alone and confirm they never leave the body.
 
-- **Keep them in by distance, not by clipping.** Cutting the internal colour to a hard outline path gives a crisp rim that fights the soft bleeding edge the whole piece is built on, and p5's `beginShape()` does not build a native path to clip against anyway. Instead draw each inner blob as its own soft gradient and keep its centre inside `INNER_BLOB_MARGIN` of the silhouette, so it fades out before it ever reaches an edge. If you later need a true mask, it is `destination-in` onto an offscreen buffer — not a clip.
-- Numbers: `INNER_BLOBS`, `INNER_FLOW_SPEED`, `INNER_BLOB_SIZE`, `INNER_BLOB_MARGIN`.
-- Laptop: leave it running. The colour inside is never still; the outline and the palette do not change at all.
+- **Mix the interior SUBTRACTIVELY, on a buffer.** Everything drawn straight onto the main canvas uses `lighter`, and additive light can only add — overlapping colours go brighter and drift to white, and two colours can never make a third. That is what turned the middle of the creature into a white disc. Draw the blobs onto a `createGraphics()` buffer under `MULTIPLY` over a near-white ground, then composite the finished, already-mixed result back additively. Pigment mixes this way: blue over yellow really does go green.
+- **Then cut the buffer back to the body.** The buffer's white ground will otherwise lift the whole black background to charcoal. Use `destination-in` with the silhouette — note there is **no p5 constant for `DESTINATION_IN`**, so set `buf.drawingContext.globalCompositeOperation` directly. And keep the pass count at two: `destination-in` *multiplies* alpha, so six passes at 0.5 erase the colour completely while two at 0.92 leave a soft edge.
+- **Derive the palette from the creature's own hue**, so it shifts as the creature drifts: one hue near the body, one across the wheel from it, one between. Keep all of them desaturated and bright so the creature stays in the soft register of the reference whatever hue it happens to be at.
+- **Keep the blobs in by distance, not by clipping.** A hard outline clip gives a crisp rim that fights the soft edge. The `destination-in` mask above handles containment without one.
+- Numbers: `INNER_BLOBS`, `INNER_BLOB_PASSES`, `INNER_FLOW_SPEED`, `INNER_BLOB_SIZE`, `INNER_BLOB_ALPHA`, `INNER_BLOB_MARGIN`, `INNER_COMPOSITE_ALPHA`, `INNER_MASK_ALPHA`, `INNER_MASK_PASSES`, `INNER_BRIGHT_SCALE`, `INNER_HUE_OFFSETS`, `INNER_SAT_RANGE`.
+- Laptop: leave it running. The colour inside is never still; the outline and the palette do not change at all. Open `?hue=30`, `?hue=150`, `?hue=270` and the whole creature should shift colour together, each still carrying darker mixed regions inside rather than a white core.
 - Phone: same. This is the thing that makes it look alive between visitors.
 
 ### Step 12 — The banding packs and unpacks
